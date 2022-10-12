@@ -5,3 +5,4 @@ rabbitmq-admin
 tenacity
 lightkube
 lightkube-models
+jsonschema
