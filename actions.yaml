@@ -4,3 +4,18 @@
 get-operator-info:
   description: |
     Get information on the operator user for rabbitmq management.
+
+get-service-account:
+  description: |
+    Generate credentials and access for an external RabbitMQ service.
+  params:
+    username:
+      type: string
+      description: The username for the service account.
+    vhost:
+      type: string
+      description: The RabbitMQ virtual host to use for the account.
+  required:
+    - username
+    - vhost
+  additionalProperties: False

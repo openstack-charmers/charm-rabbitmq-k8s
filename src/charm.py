@@ -13,6 +13,7 @@ import rabbitmq_admin
 import requests
 import tenacity
 from typing import Union
+from ipaddress import IPv4Address, IPv6Address
 
 from charms.observability_libs.v0.kubernetes_service_patch import (
     KubernetesServicePatch,
@@ -20,7 +21,7 @@ from charms.observability_libs.v0.kubernetes_service_patch import (
 from charms.rabbitmq_k8s.v0.rabbitmq import RabbitMQProvides
 from charms.traefik_k8s.v1.ingress import IngressPerAppRequirer
 
-from ops.charm import CharmBase
+from ops.charm import CharmBase, ActionEvent
 from ops.framework import StoredState, EventBase
 from ops.main import main
 from ops.model import (
@@ -99,12 +100,16 @@ class RabbitMQOperatorCharm(CharmBase):
             port=15672,
         )
 
+        self.framework.observe(
+            self.on.get_service_account_action,
+            self._get_service_account)
+
     def _pebble_ready(self) -> bool:
         """Check whether RabbitMQ container is up and configurable."""
         return self.unit.get_container(RABBITMQ_CONTAINER).can_connect()
 
     def _rabbitmq_running(self) -> bool:
-        """Check whetner RabbitMQ service is running."""
+        """Check whether RabbitMQ service is running."""
         if self._pebble_ready():
             try:
                 return self.unit.get_container(
@@ -292,6 +297,18 @@ class RabbitMQOperatorCharm(CharmBase):
         :returns: IP address to use for AMQP endpoint.
         """
         return str(self.model.get_binding("amqp").network.bind_address)
+
+    @property
+    def ingress_address(self) -> Union[IPv4Address, IPv6Address]:
+        """Network IP address for access to the RabbitMQ service."""
+        return self.model.get_binding(
+            'amqp').network.ingress_addresses[0]
+
+    def rabbitmq_url(self, username, password, vhost):
+        return (
+            f"rabbit://{username}:{password}"
+            f"@{self.ingress_address}:5672/{vhost}"
+        )
 
     def does_user_exist(self, username: str) -> bool:
         """Does the username exist in RabbitMQ?
@@ -647,6 +664,43 @@ USE_LONGNAME=true
                 f"Rabbitmq is not ready. Defering. Errno: {e.errno}"
             )
             event.defer()
+
+    def _get_service_account(self, event: ActionEvent) -> None:
+        """Get/create service account details for access to RabbitMQ.
+
+        :param event: The current event
+        """
+        if not self.rabbit_running and not self.peers_bind_address:
+            msg = "RabbitMQ not running, unable to create account"
+            logger.error(msg)
+            event.fail(msg)
+            return
+
+        username = event.params["username"]
+        vhost = event.params["vhost"]
+
+        try:
+            if not self.does_vhost_exist(vhost):
+                self.create_vhost(vhost)
+            if not self.does_user_exist(username):
+                password = self.create_user(username)
+                self.peers.store_password(username, password)
+            password = self.peers.retrieve_password(username)
+            self.set_user_permissions(username, vhost)
+
+            event.set_results({
+                "username": username,
+                "password": password,
+                "vhost": vhost,
+                "ingress-address": self.ingress_address,
+                "port": 5672,
+                "url": self.rabbitmq_url(username, password, vhost),
+            })
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.HTTPError) as e:
+            msg = f"Rabbitmq is not ready. Errno: {e.errno}"
+            logging.error(msg)
+            event.fail(msg)
 
 
 if __name__ == "__main__":
