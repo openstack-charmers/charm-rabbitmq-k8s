@@ -23,7 +23,13 @@ from charms.traefik_k8s.v1.ingress import IngressPerAppRequirer
 from ops.charm import CharmBase
 from ops.framework import StoredState, EventBase
 from ops.main import main
-from ops.model import ActiveStatus, BlockedStatus, WaitingStatus, Relation
+from ops.model import (
+    ActiveStatus,
+    BlockedStatus,
+    WaitingStatus,
+    Relation,
+    ModelError
+)
 from ops.pebble import PathError
 import interface_rabbitmq_peers
 
@@ -48,10 +54,9 @@ class RabbitMQOperatorCharm(CharmBase):
         super().__init__(*args)
 
         self.framework.observe(
-            self.on.rabbitmq_pebble_ready, self._on_rabbitmq_pebble_ready
+            self.on.rabbitmq_pebble_ready, self._on_config_changed
         )
         self.framework.observe(self.on.config_changed, self._on_config_changed)
-        self.framework.observe(self.on.upgrade_charm, self._on_upgrade_charm)
         self.framework.observe(
             self.on.get_operator_info_action, self._on_get_operator_info_action
         )
@@ -74,8 +79,6 @@ class RabbitMQOperatorCharm(CharmBase):
         )
 
         self._stored.set_default(enabled_plugins=[])
-        self._stored.set_default(pebble_ready=False)
-        self._stored.set_default(rmq_started=False)
         self._stored.set_default(rabbitmq_version=None)
 
         self._enable_plugin("rabbitmq_management")
@@ -96,22 +99,25 @@ class RabbitMQOperatorCharm(CharmBase):
             port=15672,
         )
 
-    def _on_rabbitmq_pebble_ready(self, event: EventBase) -> None:
-        """Define and start rabbitmq workload using the Pebble API."""
-        self._stored.pebble_ready = True
-        self._on_config_changed(event)
+    def _pebble_ready(self) -> bool:
+        """Check whether RabbitMQ container is up and configurable."""
+        return self.unit.get_container(RABBITMQ_CONTAINER).can_connect()
 
-    def _on_upgrade_charm(self, event: EventBase) -> None:
-        """Upgrade charm handler."""
-        # NOTE:
-        # as the charm upgrades, the workload container will also
-        # refresh so pebble will no longer be ready!
-        self._stored.pebble_ready = False
+    def _rabbitmq_running(self) -> bool:
+        """Check whetner RabbitMQ service is running."""
+        if self._pebble_ready():
+            try:
+                return self.unit.get_container(
+                    RABBITMQ_CONTAINER).get_service(
+                        RABBITMQ_SERVER_SERVICE).is_running()
+            except ModelError:
+                return False
+        return False
 
     def _on_config_changed(self, event: EventBase) -> None:
         """Update configuration for RabbitMQ."""
         # Ensure rabbitmq container is up and pebble is ready
-        if not self._stored.pebble_ready:
+        if not self._pebble_ready():
             event.defer()
             return
 
@@ -166,7 +172,6 @@ class RabbitMQOperatorCharm(CharmBase):
                 logging.info("RabbitMQ started")
 
         _check_rmq_running()
-        self._stored.rmq_started = True
         self._on_update_status(event)
 
     def _rabbitmq_layer(self) -> dict:
@@ -201,7 +206,7 @@ class RabbitMQOperatorCharm(CharmBase):
     def _on_peer_relation_connected(self, event: EventBase) -> None:
         """Event handler on peers relation created."""
         # Defer any peer relation setup until RMQ is actually running
-        if not self._stored.rmq_started:
+        if not self._rabbitmq_running():
             event.defer()
             return
 
@@ -645,6 +650,4 @@ USE_LONGNAME=true
 
 
 if __name__ == "__main__":
-    # Note: use_juju_for_storage=True required per
-    # https://github.com/canonical/operator/issues/506
-    main(RabbitMQOperatorCharm, use_juju_for_storage=True)
+    main(RabbitMQOperatorCharm)
