@@ -13,7 +13,6 @@ from ops.testing import Harness
 
 
 class TestCharm(unittest.TestCase):
-
     @patch("charm.KubernetesServicePatch", lambda _, service_type, ports: None)
     def setUp(self, *unused):
         self.harness = Harness(charm.RabbitMQOperatorCharm)
@@ -22,7 +21,7 @@ class TestCharm(unittest.TestCase):
 
         # Setup RabbitMQ API mocking
         mock_admin_api = MagicMock()
-        mock_admin_api.overview.return_value = {'product_version': '3.19.2'}
+        mock_admin_api.overview.return_value = {"product_version": "3.19.2"}
         self.harness.charm._get_admin_api = Mock()
         self.harness.charm._get_admin_api.return_value = mock_admin_api
 
@@ -69,49 +68,65 @@ class TestCharm(unittest.TestCase):
         # Get the rabbitmq container from the model
         container = self.harness.model.unit.get_container("rabbitmq")
         # RabbitMQ is up, operator user initialized
-        peers_relation_id = self.harness.add_relation("peers", "rabbitmq-operator")
-        self.harness.add_relation_unit(peers_relation_id, "rabbitmq-operator/0")
+        peers_relation_id = self.harness.add_relation(
+            "peers", "rabbitmq-k8s"
+        )
+        self.harness.add_relation_unit(
+            peers_relation_id, "rabbitmq-k8s/0"
+        )
         # Peer relation complete
         self.harness.update_relation_data(
-            peers_relation_id, self.harness.charm.app.name,
+            peers_relation_id,
+            self.harness.charm.app.name,
             {
                 "operator_password": "foobar",
                 "operator_user_created": "rmqadmin",
                 "erlang_cookie": "magicsecurity",
-            }
+            },
         )
         # Emit the PebbleReadyEvent carrying the rabbitmq container
         self.harness.charm.on.rabbitmq_pebble_ready.emit(container)
         # Get the plan now we've run PebbleReady
-        updated_plan = self.harness.get_container_pebble_plan("rabbitmq").to_dict()
+        updated_plan = self.harness.get_container_pebble_plan(
+            "rabbitmq"
+        ).to_dict()
         # Check we've got the plan we expected
         self.assertEqual(expected_plan, updated_plan)
         # Check the service was started
-        service = self.harness.model.unit.get_container("rabbitmq").get_service("rabbitmq-server")
+        service = self.harness.model.unit.get_container(
+            "rabbitmq"
+        ).get_service("rabbitmq-server")
         self.assertTrue(service.is_running())
 
     def test_update_status(self):
-        """This test validates the charm, the peers relation and the amqp relation.
-        """
+        """This test validates the charm, the peers and the amqp relation."""
         self.harness.set_leader(True)
         self.harness.model.get_binding = Mock()
         # Early not initialized
         self.harness.charm.on.update_status.emit()
         self.assertEqual(
             self.harness.model.unit.status,
-            ops.model.WaitingStatus('Waiting for leader to create operator user'))
+            ops.model.WaitingStatus(
+                "Waiting for leader to create operator user"
+            ),
+        )
 
         # RabbitMQ is up, operator user initialized
-        peers_relation_id = self.harness.add_relation("peers", "rabbitmq-operator")
-        self.harness.add_relation_unit(peers_relation_id, "rabbitmq-operator/0")
+        peers_relation_id = self.harness.add_relation(
+            "peers", "rabbitmq-k8s"
+        )
+        self.harness.add_relation_unit(
+            peers_relation_id, "rabbitmq-k8s/0"
+        )
         # Peer relation complete
         self.harness.update_relation_data(
-            peers_relation_id, self.harness.charm.app.name,
+            peers_relation_id,
+            self.harness.charm.app.name,
             {
                 "operator_password": "foobar",
                 "operator_user_created": "rmqadmin",
                 "erlang_cookie": "magicsecurity",
-            }
+            },
         )
         # AMQP relation incomplete
         amqp_relation_id = self.harness.add_relation("amqp", "amqp-client-app")
@@ -119,10 +134,11 @@ class TestCharm(unittest.TestCase):
 
         # AMQP relation complete
         self.harness.update_relation_data(
-            amqp_relation_id, "amqp-client-app",
-            {"username": "client",
-             "vhost": "client-vhost"})
+            amqp_relation_id,
+            "amqp-client-app",
+            {"username": "client", "vhost": "client-vhost"},
+        )
         self.harness.charm.on.update_status.emit()
         self.assertEqual(
-            self.harness.model.unit.status,
-            ops.model.ActiveStatus())
+            self.harness.model.unit.status, ops.model.ActiveStatus()
+        )

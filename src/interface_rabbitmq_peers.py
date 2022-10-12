@@ -9,7 +9,6 @@ This is an internal interface used by the RabbitMQ operator charm.
 import logging
 
 from ops.framework import (
-    StoredState,
     EventBase,
     ObjectEvents,
     EventSource,
@@ -57,7 +56,7 @@ class RabbitMQOperatorPeers(Object):
     """RabbitMQ Operator Peer interface"""
 
     on = RabbitMQOperatorPeersEvents()
-    state = StoredState()
+
     OPERATOR_PASSWORD = "operator_password"
     OPERATOR_USER_CREATED = "operator_user_created"
     ERLANG_COOKIE = "erlang_cookie"

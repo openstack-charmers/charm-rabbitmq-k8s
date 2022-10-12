@@ -1,6 +1,6 @@
-# Copyright 2021 David Ames
+# Copyright 2021 Canonical Ltd.
 # See LICENSE file for licensing details.
-name: sunbeam-rabbitmq-operator
+name: rabbitmq-k8s
 description: RabbitMQ
 summary: RabbitMQ charmed operator for Kubernetes
 
@@ -30,7 +30,8 @@ provides:
 requires:
   ingress:
     interface: ingress
+    limit: 1
 
 peers:
   peers:
-    interface: rabbitmq-operator-peer
+    interface: rabbitmq-peer

@@ -1,4 +1,4 @@
-# rabbitmq-operator
+# rabbitmq-k8s
 
 ## Description
 
@@ -18,15 +18,15 @@ begin using the message broker immediately.
 #### Simple deployment
 
 ```
- juju deploy thedac-rabbitmq-operator
- juju deploy nginx-ingress-integrator
- juju add-relation thedac-rabbitmq-operator nginx-ingress-integrator
+ juju deploy --trust rabbitmq-k8s
+ juju deploy --trust traefik-k8s
+ juju add-relation rabbitmq-k8s traefik-k8s
 ```
 
 #### Relate consuming client operators
 
 ```
-juju add-relation <app-name>:amqp thedac-rabbitmq-operator:amqp
+juju add-relation <app-name>:amqp rabbitmq-k8s:amqp
 ```
 
 ### Access the RabbitMQ management web UI
@@ -36,7 +36,7 @@ juju add-relation <app-name>:amqp thedac-rabbitmq-operator:amqp
  # Get the ingress service IP
  juju status
  # Get user and password for administrive operator user
- juju run-action --wait thedac-rabbitmq-operator/0 get-operator-info
+ juju run-action --wait rabbitmq-k8s/0 get-operator-info
 ```
  
 In a browser:

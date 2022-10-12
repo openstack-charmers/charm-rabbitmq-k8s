@@ -14,18 +14,18 @@ import requests
 import tenacity
 from typing import Union
 
-from charms.nginx_ingress_integrator.v0.ingress import IngressRequires
-from charms.sunbeam_rabbitmq_operator.v0.amqp import AMQPProvides
 from charms.observability_libs.v0.kubernetes_service_patch import (
     KubernetesServicePatch,
 )
+from charms.rabbitmq_k8s.v0.rabbitmq import RabbitMQProvides
+from charms.traefik_k8s.v1.ingress import IngressPerAppRequirer
 
 from ops.charm import CharmBase
 from ops.framework import StoredState, EventBase
 from ops.main import main
 from ops.model import ActiveStatus, BlockedStatus, WaitingStatus, Relation
 from ops.pebble import PathError
-import interface_rabbitmq_operator_peers
+import interface_rabbitmq_peers
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ class RabbitMQOperatorCharm(CharmBase):
         )
         self.framework.observe(self.on.update_status, self._on_update_status)
         # Peers
-        self.peers = interface_rabbitmq_operator_peers.RabbitMQOperatorPeers(
+        self.peers = interface_rabbitmq_peers.RabbitMQOperatorPeers(
             self, "peers"
         )
         self.framework.observe(
@@ -65,7 +65,7 @@ class RabbitMQOperatorCharm(CharmBase):
             self._on_peer_relation_connected,
         )
         # AMQP Provides
-        self.amqp_provider = AMQPProvides(
+        self.amqp_provider = RabbitMQProvides(
             self, "amqp", self.create_amqp_credentials
         )
         self.framework.observe(
@@ -78,15 +78,6 @@ class RabbitMQOperatorCharm(CharmBase):
         self._stored.set_default(rmq_started=False)
         self._stored.set_default(rabbitmq_version=None)
 
-        self.ingress_mgmt = IngressRequires(
-            self,
-            {
-                "service-hostname": "rabbitmq-management.juju",
-                "service-name": self.app.name,
-                "service-port": 15672,
-            },
-        )
-
         self._enable_plugin("rabbitmq_management")
         self._enable_plugin("rabbitmq_peer_discovery_k8s")
 
@@ -94,8 +85,15 @@ class RabbitMQOperatorCharm(CharmBase):
         # does at some point in time.
         self.service_patcher = KubernetesServicePatch(
             self,
-            service_type="ClusterIP",
-            ports=[("amqp", 5672), ("management", 15672)]
+            service_type="LoadBalancer",
+            ports=[("amqp", 5672), ("management", 15672)],
+        )
+
+        # NOTE: ingress for management WebUI/API only
+        self.management_ingress = IngressPerAppRequirer(
+            self,
+            "ingress",
+            port=15672,
         )
 
     def _on_rabbitmq_pebble_ready(self, event: EventBase) -> None:
@@ -126,7 +124,7 @@ class RabbitMQOperatorCharm(CharmBase):
         # the rabbit environment. This is due to rabbitmq-env.conf needing
         # the unit address for peering.
         if self.peers_bind_address is None:
-            logger.debug('Waiting for binding address on peers interface')
+            logger.debug("Waiting for binding address on peers interface")
             event.defer()
             return
 
@@ -187,9 +185,7 @@ class RabbitMQOperatorCharm(CharmBase):
                     "startup": "enabled",
                     "user": RABBITMQ_USER,
                     "group": RABBITMQ_GROUP,
-                    "requires": [
-                        EPMD_SERVICE
-                    ],
+                    "requires": [EPMD_SERVICE],
                 },
                 EPMD_SERVICE: {
                     "override": "replace",
@@ -276,7 +272,7 @@ class RabbitMQOperatorCharm(CharmBase):
 
         :returns: IP address to use for peering, or None if not yet available
         """
-        address = self.model.get_binding('peers').network.bind_address
+        address = self.model.get_binding("peers").network.bind_address
         if address is None:
             return address
         return str(address)
@@ -439,8 +435,10 @@ class RabbitMQOperatorCharm(CharmBase):
     ) -> rabbitmq_admin.AdminAPI:
         """Return an administrative API for RabbitMQ.
 
-        :username: Username to access RMQ API (defaults to generated operator user)
-        :password: Password to access RMQ API (defaults to generated operator password)
+        :username: Username to access RMQ API
+                   (defaults to generated operator user)
+        :password: Password to access RMQ API
+                   (defaults to generated operator password)
         :returns: The RabbitMQ administrative API object
         """
         username = username or self._operator_user
@@ -453,11 +451,12 @@ class RabbitMQOperatorCharm(CharmBase):
         """Initialize the operator administrative user.
 
         By default, the RabbitMQ admin interface has an administravie user
-        'guest' with password 'guest'. We are exposing the admin interface so we
-        must create a new administravie user and remove the guest user.
+        'guest' with password 'guest'. We are exposing the admin interface
+        so we must create a new administravie user and remove the guest
+        user.
 
-        Create the 'operator' administravie user, grant it permissions and tell
-        the peer relation this is done.
+        Create the 'operator' administravie user, grant it permissions and
+        tell the peer relation this is done.
 
         Burn the bridge behind us and remove the guest user.
         """
@@ -471,7 +470,8 @@ class RabbitMQOperatorCharm(CharmBase):
         )
         api.create_user_permission(self._operator_user, vhost="/")
         self.peers.set_operator_user_created(self._operator_user)
-        # Burn the bridge behind us. We do not want to leave a known user/pass available
+        # Burn the bridge behind us.
+        # We do not want to leave a known user/pass available
         logging.warning("Deleting the guest user.")
         api.delete_user("guest")
 
@@ -495,8 +495,9 @@ class RabbitMQOperatorCharm(CharmBase):
         enabled_plugins_template = f"[{enabled_plugins}]."
         logger.info("Pushing new enabled_plugins")
         container.push(
-            "/etc/rabbitmq/enabled_plugins", enabled_plugins_template,
-            make_dirs=True
+            "/etc/rabbitmq/enabled_plugins",
+            enabled_plugins_template,
+            make_dirs=True,
         )
 
     def _render_and_push_rabbitmq_conf(self) -> None:
@@ -531,7 +532,9 @@ cluster_partition_handling = autoheal
 queue_master_locator = min-masters
 """
         logger.info("Pushing new rabbitmq.conf")
-        container.push("/etc/rabbitmq/rabbitmq.conf", rabbitmq_conf, make_dirs=True)
+        container.push(
+            "/etc/rabbitmq/rabbitmq.conf", rabbitmq_conf, make_dirs=True
+        )
 
     @property
     def nodename(self) -> str:
@@ -604,7 +607,7 @@ USE_LONGNAME=true
         # units will need this in order to properly start and peer, so make
         # sure this is available before attempting to create any credentials
         if self.peers_bind_address is None:
-            logger.debug('Waiting for peers bind address')
+            logger.debug("Waiting for peers bind address")
             event.defer()
             return
 
@@ -628,12 +631,12 @@ USE_LONGNAME=true
             # unauthorized in the message. Just check the status code for now.
             if http_e.response.status_code == 401:
                 logger.warning(
-                    f'Rabbitmq has not been fully configured yet, deferring. '
-                    f'Errno: {http_e.response.status_code}'
+                    f"Rabbitmq has not been fully configured yet, deferring. "
+                    f"Errno: {http_e.response.status_code}"
                 )
                 event.defer()
             else:
-                raise()
+                raise ()
         except requests.exceptions.ConnectionError as e:
             logging.warning(
                 f"Rabbitmq is not ready. Defering. Errno: {e.errno}"
