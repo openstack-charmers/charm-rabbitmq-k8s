@@ -40,8 +40,8 @@ juju add-relation <app-name>:amqp rabbitmq-k8s:amqp
 ```
  
 In a browser:
-* Connect to the ingress service IP and port 15672 
-  * Example: http://10.152.183.37:15672
+* Connect to the ingress service IP and application path
+  * Example: http://10.152.183.37:80/default-rabbitmq-k8s
 * Login with the `operator` user and the password from get-operator-info
 
 ### Actions
