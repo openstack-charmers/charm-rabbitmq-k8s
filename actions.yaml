@@ -7,7 +7,7 @@ get-operator-info:
 
 get-service-account:
   description: |
-    Generate credentials and access for an external RabbitMQ service.
+    Generate credentials and access for an external service.
   params:
     username:
       type: string
