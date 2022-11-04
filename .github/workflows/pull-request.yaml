@@ -19,20 +19,6 @@ jobs:
       - name: Run linters
         run: tox -e pep8
 
-  check-libraries:
-    name: Check libraries
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v2
-        with:
-          fetch-depth: 0
-      - name: Check libraries
-        uses: canonical/charming-actions/check-libraries@1.0.0
-        with:
-          credentials: "${{ secrets.CHARMHUB_TOKEN }}"
-          github-token: "${{ secrets.GITHUB_TOKEN }}"
-
   unit-test:
     name: Unit tests
     runs-on: ubuntu-latest
