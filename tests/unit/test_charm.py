@@ -1,20 +1,41 @@
 # Copyright 2021 David
-# See LICENSE file for licensing details.
+# Copyright 2021 Canonical Ltd.
 #
-# Learn more about testing at: https://juju.is/docs/sdk/testing
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Unit tests for RabbitMQ operator."""
 
 import unittest
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import (
+    MagicMock,
+    Mock,
+    patch,
+)
+
+import ops.model
+from ops.testing import (
+    Harness,
+)
 
 import charm
-import ops.model
-
-from ops.testing import Harness
 
 
 class TestCharm(unittest.TestCase):
+    """Unit tests for RabbitMQ operator."""
+
     @patch("charm.KubernetesServicePatch", lambda _, service_type, ports: None)
     def setUp(self, *unused):
+        """Setup test fixtures for unit tests."""
         self.harness = Harness(charm.RabbitMQOperatorCharm)
         self.addCleanup(self.harness.cleanup)
         self.harness.begin()
@@ -27,17 +48,19 @@ class TestCharm(unittest.TestCase):
 
         # network_get is not implemented in the testing harness
         # so mock out for now
-        # TODO: remove when implemeted
+        # TODO: remove when implemented
         self.harness.charm._amqp_bind_address = Mock(return_value="10.5.0.1")
         self.harness.charm._peers_bind_address = Mock(return_value="10.10.1.1")
         self.maxDiff = None
 
     def test_action(self):
+        """Test actions for operator."""
         action_event = Mock()
         self.harness.charm._on_get_operator_info_action(action_event)
         self.assertTrue(action_event.set_results.called)
 
     def test_rabbitmq_pebble_ready(self):
+        """Test pebble handler."""
         # self.harness.charm._render_and_push_config_files = Mock()
         # self.harness.charm._render_and_push_plugins = Mock()
         # Check the initial Pebble plan is empty
@@ -68,12 +91,8 @@ class TestCharm(unittest.TestCase):
         # Get the rabbitmq container from the model
         container = self.harness.model.unit.get_container("rabbitmq")
         # RabbitMQ is up, operator user initialized
-        peers_relation_id = self.harness.add_relation(
-            "peers", "rabbitmq-k8s"
-        )
-        self.harness.add_relation_unit(
-            peers_relation_id, "rabbitmq-k8s/0"
-        )
+        peers_relation_id = self.harness.add_relation("peers", "rabbitmq-k8s")
+        self.harness.add_relation_unit(peers_relation_id, "rabbitmq-k8s/0")
         # Peer relation complete
         self.harness.update_relation_data(
             peers_relation_id,
@@ -112,12 +131,8 @@ class TestCharm(unittest.TestCase):
         )
 
         # RabbitMQ is up, operator user initialized
-        peers_relation_id = self.harness.add_relation(
-            "peers", "rabbitmq-k8s"
-        )
-        self.harness.add_relation_unit(
-            peers_relation_id, "rabbitmq-k8s/0"
-        )
+        peers_relation_id = self.harness.add_relation("peers", "rabbitmq-k8s")
+        self.harness.add_relation_unit(peers_relation_id, "rabbitmq-k8s/0")
         # Peer relation complete
         self.harness.update_relation_data(
             peers_relation_id,
