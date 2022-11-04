@@ -1,37 +1,66 @@
 #!/usr/bin/env python3
-# Copyright 2021 David Ames
-# See LICENSE file for licensing details.
 #
-# Learn more at: https://juju.is/docs/sdk
+# Copyright 2021 David Ames
+# Copyright 2021 Canonical Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-"""RabbitMQ Operator Charm
-"""
+"""RabbitMQ Operator Charm."""
 
 import logging
+from ipaddress import (
+    IPv4Address,
+    IPv6Address,
+)
+from typing import (
+    Union,
+)
+
 import pwgen
 import rabbitmq_admin
 import requests
 import tenacity
-from typing import Union
-from ipaddress import IPv4Address, IPv6Address
-
 from charms.observability_libs.v0.kubernetes_service_patch import (
     KubernetesServicePatch,
 )
-from charms.rabbitmq_k8s.v0.rabbitmq import RabbitMQProvides
-from charms.traefik_k8s.v1.ingress import IngressPerAppRequirer
-
-from ops.charm import CharmBase, ActionEvent
-from ops.framework import StoredState, EventBase
-from ops.main import main
+from charms.rabbitmq_k8s.v0.rabbitmq import (
+    RabbitMQProvides,
+)
+from charms.traefik_k8s.v1.ingress import (
+    IngressPerAppRequirer,
+)
+from ops.charm import (
+    ActionEvent,
+    CharmBase,
+)
+from ops.framework import (
+    EventBase,
+    StoredState,
+)
+from ops.main import (
+    main,
+)
 from ops.model import (
     ActiveStatus,
     BlockedStatus,
-    WaitingStatus,
+    ModelError,
     Relation,
-    ModelError
+    WaitingStatus,
 )
-from ops.pebble import PathError
+from ops.pebble import (
+    PathError,
+)
+
 import interface_rabbitmq_peers
 
 logger = logging.getLogger(__name__)
@@ -46,7 +75,7 @@ EPMD_SERVICE = "epmd"
 
 
 class RabbitMQOperatorCharm(CharmBase):
-    """RabbitMQ Operator Charm"""
+    """RabbitMQ Operator Charm."""
 
     _stored = StoredState()
     _operator_user = "operator"
@@ -101,8 +130,8 @@ class RabbitMQOperatorCharm(CharmBase):
         )
 
         self.framework.observe(
-            self.on.get_service_account_action,
-            self._get_service_account)
+            self.on.get_service_account_action, self._get_service_account
+        )
 
     def _pebble_ready(self) -> bool:
         """Check whether RabbitMQ container is up and configurable."""
@@ -112,9 +141,11 @@ class RabbitMQOperatorCharm(CharmBase):
         """Check whether RabbitMQ service is running."""
         if self._pebble_ready():
             try:
-                return self.unit.get_container(
-                    RABBITMQ_CONTAINER).get_service(
-                        RABBITMQ_SERVER_SERVICE).is_running()
+                return (
+                    self.unit.get_container(RABBITMQ_CONTAINER)
+                    .get_service(RABBITMQ_SERVER_SERVICE)
+                    .is_running()
+                )
             except ModelError:
                 return False
         return False
@@ -156,7 +187,7 @@ class RabbitMQOperatorCharm(CharmBase):
                 group=RABBITMQ_GROUP,
             )
 
-        # Add intial Pebble config layer using the Pebble API
+        # Add initial Pebble config layer using the Pebble API
         container.add_layer("rabbitmq", self._rabbitmq_layer(), combine=True)
 
         # Autostart any services that were defined with startup: enabled
@@ -180,10 +211,7 @@ class RabbitMQOperatorCharm(CharmBase):
         self._on_update_status(event)
 
     def _rabbitmq_layer(self) -> dict:
-        """RabbitMQ layer definition.
-
-        :returns: Pebble layer configuration
-        """
+        """Pebble layer definition for RabbitMQ."""
         return {
             "summary": "RabbitMQ layer",
             "description": "pebble config layer for RabbitMQ",
@@ -208,7 +236,10 @@ class RabbitMQOperatorCharm(CharmBase):
             },
         }
 
-    def _on_peer_relation_connected(self, event: EventBase) -> None:
+    # TODO: refactor this method to reduce complexity.
+    def _on_peer_relation_connected(  # noqa: C901
+        self, event: EventBase
+    ) -> None:
         """Event handler on peers relation created."""
         # Defer any peer relation setup until RMQ is actually running
         if not self._rabbitmq_running():
@@ -265,16 +296,14 @@ class RabbitMQOperatorCharm(CharmBase):
 
     @property
     def amqp_rel(self) -> Relation:
-        """AMQP relation.
-
-        :returns: AMQP relation
-        """
+        """AMQP relation."""
         for amqp in self.framework.model.relations["amqp"]:
             # We only care about one relation. Returning the first.
             return amqp
 
     @property
     def peers_bind_address(self) -> str:
+        """Bind address for peer interface."""
         return self._peers_bind_address()
 
     def _peers_bind_address(self) -> str:
@@ -289,6 +318,7 @@ class RabbitMQOperatorCharm(CharmBase):
 
     @property
     def amqp_bind_address(self) -> str:
+        """AMQP endpoint bind address."""
         return self._amqp_bind_address()
 
     def _amqp_bind_address(self) -> str:
@@ -301,10 +331,10 @@ class RabbitMQOperatorCharm(CharmBase):
     @property
     def ingress_address(self) -> Union[IPv4Address, IPv6Address]:
         """Network IP address for access to the RabbitMQ service."""
-        return self.model.get_binding(
-            'amqp').network.ingress_addresses[0]
+        return self.model.get_binding("amqp").network.ingress_addresses[0]
 
-    def rabbitmq_url(self, username, password, vhost):
+    def rabbitmq_url(self, username, password, vhost) -> str:
+        """URL to access RabbitMQ unit."""
         return (
             f"rabbit://{username}:{password}"
             f"@{self.ingress_address}:5672/{vhost}"
@@ -414,7 +444,7 @@ class RabbitMQOperatorCharm(CharmBase):
 
     @property
     def _rabbitmq_mgmt_url(self) -> str:
-        """RabbitMQ Management URL."""
+        """Management URL for RabbitMQ."""
         # Use localhost for admin ACL
         return "http://localhost:15672"
 
@@ -560,6 +590,7 @@ queue_master_locator = min-masters
 
     @property
     def nodename(self) -> str:
+        """K8S DNS nodename for local unit."""
         return f"{self.unit.name.replace('/', '-')}.{self.app.name}-endpoints"
 
     def _render_and_push_rabbitmq_env(self) -> None:
@@ -661,7 +692,7 @@ USE_LONGNAME=true
                 raise ()
         except requests.exceptions.ConnectionError as e:
             logging.warning(
-                f"Rabbitmq is not ready. Defering. Errno: {e.errno}"
+                f"Rabbitmq is not ready, deferring. Errno: {e.errno}"
             )
             event.defer()
 
@@ -688,16 +719,20 @@ USE_LONGNAME=true
             password = self.peers.retrieve_password(username)
             self.set_user_permissions(username, vhost)
 
-            event.set_results({
-                "username": username,
-                "password": password,
-                "vhost": vhost,
-                "ingress-address": self.ingress_address,
-                "port": 5672,
-                "url": self.rabbitmq_url(username, password, vhost),
-            })
-        except (requests.exceptions.ConnectionError,
-                requests.exceptions.HTTPError) as e:
+            event.set_results(
+                {
+                    "username": username,
+                    "password": password,
+                    "vhost": vhost,
+                    "ingress-address": self.ingress_address,
+                    "port": 5672,
+                    "url": self.rabbitmq_url(username, password, vhost),
+                }
+            )
+        except (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.HTTPError,
+        ) as e:
             msg = f"Rabbitmq is not ready. Errno: {e.errno}"
             logging.error(msg)
             event.fail(msg)
