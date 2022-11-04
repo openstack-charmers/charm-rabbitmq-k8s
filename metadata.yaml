@@ -17,7 +17,8 @@ resources:
   rabbitmq-image:
     type: oci-image
     description: OCI image for rabbitmq
-    upstream-source: docker.io/rabbitmq:3.9.23-management
+    # 3.9.24-management tag
+    upstream-source: docker.io/rabbitmq@sha256:975add6875b4a24979f9758b8aec34778d73451aa009e32079b6da6ec5115cf8
 
 storage:
   rabbitmq-data:
