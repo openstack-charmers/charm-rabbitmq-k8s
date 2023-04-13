@@ -30,7 +30,7 @@ import pwgen
 import rabbitmq_admin
 import requests
 import tenacity
-from charms.observability_libs.v0.kubernetes_service_patch import (
+from charms.observability_libs.v1.kubernetes_service_patch import (
     KubernetesServicePatch,
 )
 from charms.rabbitmq_k8s.v0.rabbitmq import (
@@ -38,6 +38,9 @@ from charms.rabbitmq_k8s.v0.rabbitmq import (
 )
 from charms.traefik_k8s.v1.ingress import (
     IngressPerAppRequirer,
+)
+from lightkube.models.core_v1 import (
+    ServicePort,
 )
 from ops.charm import (
     ActionEvent,
@@ -118,8 +121,11 @@ class RabbitMQOperatorCharm(CharmBase):
         # does at some point in time.
         self.service_patcher = KubernetesServicePatch(
             self,
+            ports=[
+                ServicePort(5672, name="amqp"),
+                ServicePort(15672, name="management"),
+            ],
             service_type="LoadBalancer",
-            ports=[("amqp", 5672), ("management", 15672)],
         )
 
         # NOTE: ingress for management WebUI/API only
