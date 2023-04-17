@@ -64,6 +64,7 @@ class TestCharm(unittest.TestCase):
         # self.harness.charm._render_and_push_config_files = Mock()
         # self.harness.charm._render_and_push_plugins = Mock()
         # Check the initial Pebble plan is empty
+        self.harness.set_can_connect("rabbitmq", True)
         initial_plan = self.harness.get_container_pebble_plan("rabbitmq")
         self.assertEqual(initial_plan.to_yaml(), "{}\n")
         # Expected plan after Pebble ready with default config
