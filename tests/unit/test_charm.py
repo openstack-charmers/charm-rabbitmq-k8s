@@ -61,6 +61,9 @@ class TestCharm(unittest.TestCase):
 
     def test_rabbitmq_pebble_ready(self):
         """Test pebble handler."""
+        # Get the rabbitmq container from the model
+        container = self.harness.model.unit.get_container("rabbitmq")
+        self.harness.set_can_connect(container, True)
         # self.harness.charm._render_and_push_config_files = Mock()
         # self.harness.charm._render_and_push_plugins = Mock()
         # Check the initial Pebble plan is empty
@@ -88,8 +91,6 @@ class TestCharm(unittest.TestCase):
                 },
             },
         }
-        # Get the rabbitmq container from the model
-        container = self.harness.model.unit.get_container("rabbitmq")
         # RabbitMQ is up, operator user initialized
         peers_relation_id = self.harness.add_relation("peers", "rabbitmq-k8s")
         self.harness.add_relation_unit(peers_relation_id, "rabbitmq-k8s/0")
