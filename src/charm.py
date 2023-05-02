@@ -219,14 +219,11 @@ class RabbitMQOperatorCharm(CharmBase):
                 RABBITMQ_SERVER_SERVICE: {
                     "override": "replace",
                     "summary": "RabbitMQ Server",
-                    "command": "rabbitmq-server",
+                    "command": "/usr/lib/rabbitmq/bin/rabbitmq-server",
                     "startup": "enabled",
                     "user": RABBITMQ_USER,
                     "group": RABBITMQ_GROUP,
                     "requires": [EPMD_SERVICE],
-                    "environment": {
-                        "RABBITMQ_LOGS": "-",
-                    },
                 },
                 EPMD_SERVICE: {
                     "override": "replace",
@@ -585,6 +582,12 @@ cluster_formation.node_cleanup.only_log_warning = true
 cluster_partition_handling = autoheal
 
 queue_master_locator = min-masters
+
+# Logging
+log.console = true
+log.console.level = info
+
+log.file = false
 """
         logger.info("Pushing new rabbitmq.conf")
         container.push(
