@@ -224,6 +224,9 @@ class RabbitMQOperatorCharm(CharmBase):
                     "user": RABBITMQ_USER,
                     "group": RABBITMQ_GROUP,
                     "requires": [EPMD_SERVICE],
+                    "environment": {
+                        "RABBITMQ_LOGS": "-",
+                    },
                 },
                 EPMD_SERVICE: {
                     "override": "replace",

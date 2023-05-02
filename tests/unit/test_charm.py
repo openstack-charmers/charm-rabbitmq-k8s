@@ -80,6 +80,9 @@ class TestCharm(unittest.TestCase):
                     "user": "rabbitmq",
                     "group": "rabbitmq",
                     "requires": ["epmd"],
+                    "environment": {
+                        "RABBITMQ_LOGS": "-",
+                    },
                 },
                 "epmd": {
                     "override": "replace",
