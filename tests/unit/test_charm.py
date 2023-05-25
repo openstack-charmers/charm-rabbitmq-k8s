@@ -70,7 +70,7 @@ class TestCharm(unittest.TestCase):
         # Expected plan after Pebble ready with default config
         expected_plan = {
             "services": {
-                "rabbitmq-server": {
+                "rabbitmq": {
                     "override": "replace",
                     "summary": "RabbitMQ Server",
                     "command": "rabbitmq-server",
@@ -115,7 +115,7 @@ class TestCharm(unittest.TestCase):
         # Check the service was started
         service = self.harness.model.unit.get_container(
             "rabbitmq"
-        ).get_service("rabbitmq-server")
+        ).get_service("rabbitmq")
         self.assertTrue(service.is_running())
 
     def test_update_status(self):
