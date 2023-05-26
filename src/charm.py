@@ -69,7 +69,7 @@ import interface_rabbitmq_peers
 logger = logging.getLogger(__name__)
 
 RABBITMQ_CONTAINER = "rabbitmq"
-RABBITMQ_SERVER_SERVICE = "rabbitmq-server"
+RABBITMQ_SERVICE = "rabbitmq"
 RABBITMQ_USER = "rabbitmq"
 RABBITMQ_GROUP = "rabbitmq"
 RABBITMQ_COOKIE_PATH = "/var/lib/rabbitmq/.erlang.cookie"
@@ -149,7 +149,7 @@ class RabbitMQOperatorCharm(CharmBase):
             try:
                 return (
                     self.unit.get_container(RABBITMQ_CONTAINER)
-                    .get_service(RABBITMQ_SERVER_SERVICE)
+                    .get_service(RABBITMQ_SERVICE)
                     .is_running()
                 )
             except ModelError:
@@ -197,7 +197,7 @@ class RabbitMQOperatorCharm(CharmBase):
         container.add_layer("rabbitmq", self._rabbitmq_layer(), combine=True)
 
         # Autostart any services that were defined with startup: enabled
-        if not container.get_service(RABBITMQ_SERVER_SERVICE).is_running():
+        if not container.get_service(RABBITMQ_SERVICE).is_running():
             logging.info("Autostarting rabbitmq")
             container.autostart()
         else:
@@ -222,7 +222,7 @@ class RabbitMQOperatorCharm(CharmBase):
             "summary": "RabbitMQ layer",
             "description": "pebble config layer for RabbitMQ",
             "services": {
-                RABBITMQ_SERVER_SERVICE: {
+                RABBITMQ_SERVICE: {
                     "override": "replace",
                     "summary": "RabbitMQ Server",
                     "command": "rabbitmq-server",
