@@ -22,3 +22,13 @@ jobs:
         run: |
           sudo snap install --classic terraform
           sudo snap install --classic juju-wait
+      - name: Configure LXD
+        run: |
+          sudo groupadd --force --system lxd
+          sudo usermod --append --groups lxd $USER
+          sudo snap start lxd
+          sudo lxd waitready --timeout=30
+          sudo lxd init --auto
+      - name: Build Charm
+        run: |
+          sg lxd -c "charmcraft -v pack"
