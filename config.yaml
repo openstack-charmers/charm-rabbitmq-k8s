@@ -2,4 +2,7 @@
 # See LICENSE file for licensing details.
 
 options:
-    {}
+  minimum-replicas:
+    default: 3
+    description: Minimum number of queues replicas, set to 0 to disable charm automatically managing queue replicas
+    type: int

@@ -19,3 +19,94 @@ get-service-account:
     - username
     - vhost
   additionalProperties: False
+
+ensure-queue-ha:
+  description: |
+    Check for queues that have insufficent memebers for high
+    availability and, if possible, add members to them.
+  params:
+    dry-run:
+      type: boolean
+      default: false
+      description: |
+        Report on what memberships would change if the command was
+        run and warn about any queues that cannot be fixed.
+
+rebalance-quorum:
+  description: |
+    Rebalance queue leaders to that they are evenly balanced
+    across the cluster.
+
+add-member:
+  description: Add member to queue
+  params:
+    queue-name:
+      type: string
+      description: |
+        Name of queue to add the member to.
+    unit-name:
+      type: string
+      description: |
+        Juju unit name of the node to be added to the queue
+    vhost:
+      type: string
+      description: |
+        vhost that the queue resides in.
+  required: [queue-name, unit-name]
+
+delete-member:
+  description: Remove member from queue
+  params:
+    queue-name:
+      type: string
+      description: |
+        Name of queue to remove the member from.
+    unit-name:
+      type: string
+      description: |
+        Juju unit name of the node to be removed from the queue
+    vhost:
+      type: string
+      description: |
+        vhost that the queue resides in.
+  required: [queue-name, unit-name]
+
+grow:
+  description: |
+   Adds a new replica on the given node for all or a half
+   of matching quorum queues.
+  params:
+    selector:
+      type: string
+      description: |
+        Valid values are "all" or even"
+    unit-name:
+      type: string
+      description: |
+        Juju unit name of the node to have queues added
+    vhost-pattern:
+      type: string
+      description: |
+        Match vhosts to be added to the node
+    queue-pattern:
+      type: string
+      description: |
+        Match queues to be added to the node
+  required: [unit-name, selector]
+
+shrink:
+  description: |
+   Shrinks quorum queue clusters by removing any members (replicas)
+   on the given node.
+  params:
+    unit-name:
+      type: string
+      description: |
+        Juju unit name of the node to have queues added
+    error-only:
+      type: boolean
+      default: false
+      description: |
+       Only list queues which reported an error
+  required: [unit-name]
+

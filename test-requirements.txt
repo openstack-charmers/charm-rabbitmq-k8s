@@ -3,5 +3,6 @@ flake8
 stestr
 rabbitmq_admin
 git+https://github.com/openstack-charmers/zaza.git@libjuju-3.1#egg=zaza
-git+https://github.com/openstack-charmers/zaza-openstack-tests.git#egg=zaza.openstack
+#git+https://github.com/openstack-charmers/zaza-openstack-tests.git#egg=zaza.openstack
+git+https://github.com/gnuoy/zaza-openstack-tests.git@add-rabbit-quorum-queue-tests#egg=zaza.openstack
 ops
