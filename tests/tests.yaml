@@ -1,0 +1,14 @@
+gate_bundles:
+  - smoke
+smoke_bundles:
+  - smoke
+tests_options:
+  trust:
+    - smoke
+  ignore_hard_deploy_errors:
+    - smoke
+
+target_deploy_status:
+  rabbitmq:
+    workload-status: active
+    workload-status-message-regex: '^$'

@@ -1,0 +1,9 @@
+bundle: kubernetes
+applications:
+
+  rabbitmq:
+    charm: ../../rabbitmq-k8s.charm
+    scale: 1
+    trust: true
+    resources:
+      rabbitmq-image: ghcr.io/openstack-snaps/rabbitmq:3.9.13
