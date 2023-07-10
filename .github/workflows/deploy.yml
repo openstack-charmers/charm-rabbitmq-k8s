@@ -1,0 +1,40 @@
+name: deploy
+
+on:
+  workflow_call:
+
+
+jobs:
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Install Tox
+        run: pip install tox
+      - name: Setup microk8s
+        uses: charmed-kubernetes/actions-operator@main
+        with:
+          provider: microk8s
+          channel: 1.26-strict/stable
+          juju-channel: 3.1/stable
+          microk8s-addons: hostpath-storage dns rbac metallb:10.64.140.40-10.64.140.49
+      - name: Install snaps
+        run: |
+          sudo snap install --classic terraform
+          sudo snap install --classic juju-wait
+      - name: Configure LXD
+        run: |
+          sudo groupadd --force --system lxd
+          sudo usermod --append --groups lxd $USER
+          sudo snap start lxd
+          sudo lxd waitready --timeout=30
+          sudo lxd init --auto
+      - name: Build Charm
+        run: |
+          sg lxd -c "charmcraft -v pack"
+          mv rabbitmq-k8s*charm rabbitmq-k8s.charm
+      - name: Run functional tests
+        run: |
+          tox -e func-smoke

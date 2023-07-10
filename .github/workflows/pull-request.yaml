@@ -32,3 +32,5 @@ jobs:
 
       - name: Run tests
         run: tox -e py3
+  deploy:
+    uses: ./.github/workflows/deploy.yml
