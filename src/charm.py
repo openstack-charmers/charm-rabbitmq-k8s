@@ -342,7 +342,7 @@ class RabbitMQOperatorCharm(CharmBase):
 
         self._on_update_status(event)
 
-    def get_queue_growth_selector(self, min_q_len, max_q_len):
+    def get_queue_growth_selector(self, min_q_len: int, max_q_len: int):
         """Select a queue growth strategy.
 
         Select a queue growth strategy from:
@@ -379,7 +379,7 @@ class RabbitMQOperatorCharm(CharmBase):
                 selector = SELECTOR_INDIVIDUAL
         return selector
 
-    def unit_in_cluster(self, unit) -> bool:
+    def unit_in_cluster(self, unit: str) -> bool:
         """Is unit in cluster according to rabbit api."""
         api = self._get_admin_api()
         joining_node = self.generate_nodename(unit)
