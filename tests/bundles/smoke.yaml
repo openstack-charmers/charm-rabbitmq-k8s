@@ -6,4 +6,4 @@ applications:
     scale: 1
     trust: true
     resources:
-      rabbitmq-image: docker.io/rabbitmq:3.12.1-management
+      rabbitmq-image: ghcr.io/openstack-snaps/rabbitmq:3.12.1
