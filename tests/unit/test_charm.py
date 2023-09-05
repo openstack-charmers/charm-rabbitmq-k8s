@@ -73,7 +73,7 @@ class TestCharm(unittest.TestCase):
                 "rabbitmq": {
                     "override": "replace",
                     "summary": "RabbitMQ Server",
-                    "command": "rabbitmq-server",
+                    "command": "/usr/lib/rabbitmq/bin/rabbitmq-server",
                     "startup": "enabled",
                     "user": "rabbitmq",
                     "group": "rabbitmq",

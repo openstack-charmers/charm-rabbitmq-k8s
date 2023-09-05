@@ -218,6 +218,10 @@ class RabbitMQOperatorCharm(CharmBase):
 
     def _rabbitmq_layer(self) -> dict:
         """Pebble layer definition for RabbitMQ."""
+        # NOTE(jamespage)
+        # Use the full path to the rabbitmq-server binary
+        # rather than the helper wrapper script to avoid
+        # redirection of console output to a log file.
         return {
             "summary": "RabbitMQ layer",
             "description": "pebble config layer for RabbitMQ",
@@ -225,7 +229,7 @@ class RabbitMQOperatorCharm(CharmBase):
                 RABBITMQ_SERVICE: {
                     "override": "replace",
                     "summary": "RabbitMQ Server",
-                    "command": "rabbitmq-server",
+                    "command": "/usr/lib/rabbitmq/bin/rabbitmq-server",
                     "startup": "enabled",
                     "user": RABBITMQ_USER,
                     "group": RABBITMQ_GROUP,
@@ -588,6 +592,10 @@ cluster_formation.node_cleanup.only_log_warning = true
 cluster_partition_handling = autoheal
 
 queue_master_locator = min-masters
+
+# Log to console for pod logging
+log.console = true
+log.file = false
 """
         logger.info("Pushing new rabbitmq.conf")
         container.push(
