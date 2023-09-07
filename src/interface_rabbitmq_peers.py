@@ -38,13 +38,38 @@ class PeersConnectedEvent(EventBase):
     """
 
 
-class ReadyPeersEvent(EventBase):
+class PeersNodeEvent(EventBase):
+    """Peer Event which stores the nodename triggering the event."""
+
+    def __init__(self, handle, nodename):
+        super().__init__(handle)
+        self.nodename = nodename
+
+    def snapshot(self):
+        """Store event data into snapshot."""
+        return {"nodename": self.nodename}
+
+    def restore(self, snapshot):
+        """Restore data from snapshot into event."""
+        super().restore(snapshot)
+        self.nodename = snapshot["nodename"]
+
+
+class ReadyPeersEvent(PeersNodeEvent):
     """Event triggered when peer relation is ready for use.
 
     This event is triggered when the peer relation has been configured
     for use - this is done by the lead unit generating the username
     and password for the operator admin user and passing this on the
     relation.
+    """
+
+
+class PeersLeavingEvent(PeersNodeEvent):
+    """Event triggered when the peer unit leaves the relation.
+
+    This event is triggered when a peer unit leaves the relation.
+    This is almost certainly a scale-back event.
     """
 
 
@@ -64,6 +89,7 @@ class RabbitMQOperatorPeersEvents(ObjectEvents):
     connected = EventSource(PeersConnectedEvent)
     ready = EventSource(ReadyPeersEvent)
     goneaway = EventSource(PeersBrokenEvent)
+    leaving = EventSource(PeersLeavingEvent)
 
 
 class RabbitMQOperatorPeers(Object):
@@ -74,6 +100,7 @@ class RabbitMQOperatorPeers(Object):
     OPERATOR_PASSWORD = "operator_password"
     OPERATOR_USER_CREATED = "operator_user_created"
     ERLANG_COOKIE = "erlang_cookie"
+    NODENAME = "nodename"
 
     def __init__(self, charm, relation_name):
         super().__init__(charm, relation_name)
@@ -83,6 +110,9 @@ class RabbitMQOperatorPeers(Object):
         )
         self.framework.observe(
             charm.on[relation_name].relation_changed, self.on_changed
+        )
+        self.framework.observe(
+            charm.on[relation_name].relation_departed, self.on_departed
         )
         self.framework.observe(
             charm.on[relation_name].relation_broken, self.on_broken
@@ -103,11 +133,17 @@ class RabbitMQOperatorPeers(Object):
         logging.debug("RabbitMQOperatorPeers on_broken")
         self.on.gonewaway.emit()
 
+    def on_departed(self, event):
+        """Relation broken event handler."""
+        logging.debug("RabbitMQOperatorPeers on_departed")
+        self.on.leaving.emit(event.departing_unit.name)
+
     def on_changed(self, event):
         """Relation changed event handler."""
         logging.debug("RabbitMQOperatorPeers on_changed")
         if self.operator_password and self.erlang_cookie:
-            self.on.ready.emit()
+            if event.unit:
+                self.on.ready.emit(event.unit.name)
 
     def set_operator_password(self, password: str):
         """Set admin operator password in relation data bag."""
@@ -132,6 +168,11 @@ class RabbitMQOperatorPeers(Object):
         """Store username and password."""
         logging.debug(f"Storing password for {username}")
         self.peers_rel.data[self.peers_rel.app][username] = password
+
+    def set_nodename(self, nodename: str):
+        """Advertise nodename to peers."""
+        logging.debug(f"Setting nodename {nodename}")
+        self.peers_rel.data[self.model.unit][self.NODENAME] = nodename
 
     def retrieve_password(self, username: str) -> str:
         """Retrieve persisted password for provided username."""

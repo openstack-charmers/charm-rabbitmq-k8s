@@ -23,11 +23,11 @@ from ipaddress import (
     IPv6Address,
 )
 from typing import (
+    List,
     Union,
 )
 
 import pwgen
-import rabbitmq_admin
 import requests
 import tenacity
 from charms.observability_libs.v1.kubernetes_service_patch import (
@@ -61,10 +61,12 @@ from ops.model import (
     WaitingStatus,
 )
 from ops.pebble import (
+    ExecError,
     PathError,
 )
 
 import interface_rabbitmq_peers
+import rabbit_extended_api
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +75,11 @@ RABBITMQ_SERVICE = "rabbitmq"
 RABBITMQ_USER = "rabbitmq"
 RABBITMQ_GROUP = "rabbitmq"
 RABBITMQ_COOKIE_PATH = "/var/lib/rabbitmq/.erlang.cookie"
+
+SELECTOR_ALL = "all"
+SELECTOR_NONE = "none"
+SELECTOR_EVEN = "even"
+SELECTOR_INDIVIDUAL = "individual"
 
 EPMD_SERVICE = "epmd"
 
@@ -93,6 +100,12 @@ class RabbitMQOperatorCharm(CharmBase):
         self.framework.observe(
             self.on.get_operator_info_action, self._on_get_operator_info_action
         )
+        self.framework.observe(
+            self.on.add_member_action, self._on_add_member_action
+        )
+        self.framework.observe(
+            self.on.delete_member_action, self._on_delete_member_action
+        )
         self.framework.observe(self.on.update_status, self._on_update_status)
         # Peers
         self.peers = interface_rabbitmq_peers.RabbitMQOperatorPeers(
@@ -101,6 +114,14 @@ class RabbitMQOperatorCharm(CharmBase):
         self.framework.observe(
             self.peers.on.connected,
             self._on_peer_relation_connected,
+        )
+        self.framework.observe(
+            self.peers.on.ready,
+            self._on_peer_relation_ready,
+        )
+        self.framework.observe(
+            self.peers.on.leaving,
+            self._on_peer_relation_leaving,
         )
         # AMQP Provides
         self.amqp_provider = RabbitMQProvides(
@@ -242,6 +263,31 @@ class RabbitMQOperatorCharm(CharmBase):
             },
         }
 
+    def _on_peer_relation_leaving(  # noqa: C901
+        self, event: EventBase
+    ) -> None:
+        if self.unit.is_leader():
+            leaving_node = self.generate_nodename(event.nodename)
+            container = self.unit.get_container(RABBITMQ_CONTAINER)
+            logging.info(f"Removing {leaving_node} from queues")
+            try:
+                # forget_cluster_node not currently supported by HTTP API
+                process = container.exec(
+                    ["rabbitmqctl", "forget_cluster_node", leaving_node],
+                    timeout=5 * 60,
+                )
+                output, _ = process.wait_output()
+                logging.info(output)
+            except ExecError as e:
+                if "The node selected is not in the cluster" in e.stderr:
+                    logging.warning(
+                        f"Removal of {leaving_node} failed, node not found"
+                    )
+                else:
+                    logging.error(f"Removal of {leaving_node} failed")
+                    logging.error(e.stdout)
+                    logging.error(e.stderr)
+
     # TODO: refactor this method to reduce complexity.
     def _on_peer_relation_connected(  # noqa: C901
         self, event: EventBase
@@ -294,6 +340,116 @@ class RabbitMQOperatorCharm(CharmBase):
                 else:
                     raise e
 
+        self._on_update_status(event)
+
+    def get_queue_growth_selector(self, min_q_len: int, max_q_len: int):
+        """Select a queue growth strategy.
+
+        Select a queue growth strategy from:
+            ALL: All queues add a new replica
+            NONE: No queues have additional replica added
+            EVEN: Queues with an even number of replicas have additional replica added
+            INDIVIDUAL: Each queue is expanded individually
+
+        NOTE: INDIVIDUAL is expensive as an api call needs to be made
+              for each queue.
+        """
+        if min_q_len == max_q_len:
+            if max_q_len < self.min_replicas():
+                # 1 -> 2
+                # 2 -> 3
+                selector = SELECTOR_ALL
+            else:
+                # All queues have enough members but queues should
+                # not have an even number of replicas
+                selector = SELECTOR_EVEN
+        elif min_q_len > 1:
+            # 2->3
+            # 3->3
+            # 4->5 (no even queues)
+            selector = SELECTOR_EVEN
+        elif min_q_len == 1:
+            if max_q_len < self.min_replicas():
+                # 1 -> 2
+                # 2 -> 3
+                selector = SELECTOR_ALL
+            else:
+                # Cannot use "even" as the queues with 1 node need expanding,
+                # cannot use "all" as there are queues with 3+ members
+                selector = SELECTOR_INDIVIDUAL
+        return selector
+
+    def unit_in_cluster(self, unit: str) -> bool:
+        """Is unit in cluster according to rabbit api."""
+        api = self._get_admin_api()
+        joining_node = self.generate_nodename(unit)
+        clustered_nodes = [n["name"] for n in api.list_nodes()]
+        logging.debug(f"Found cluster nodes {clustered_nodes}")
+        return joining_node in clustered_nodes
+
+    def grow_queues_onto_unit(self, unit) -> None:
+        """Grow any undersized queues onto unit."""
+        api = self._get_admin_api()
+        joining_node = self.generate_nodename(unit)
+        queue_members = [len(q["members"]) for q in api.list_queues()]
+        if not queue_members:
+            logging.debug("No queues found, queue growth skipped")
+        queue_members.sort()
+        selector = self.get_queue_growth_selector(
+            queue_members[0], queue_members[-1]
+        )
+        logging.debug(f"selector: {selector}")
+        if selector in [SELECTOR_ALL, SELECTOR_EVEN]:
+            api.grow_queue(joining_node, selector)
+        elif selector == SELECTOR_INDIVIDUAL:
+            undersized_queues = self.get_undersized_queues()
+            for q in undersized_queues:
+                if joining_node not in q["members"]:
+                    api.add_member(joining_node, q["vhost"], q["name"])
+        elif selector == SELECTOR_NONE:
+            logging.debug("No queues need new replicas")
+        else:
+            logging.error(f"Unknown selectore type {selector}")
+
+    def _on_peer_relation_ready(self, event: EventBase) -> None:
+        """Event handler on peers relation ready."""
+        if not self._rabbitmq_running():
+            event.defer()
+            return
+
+        if not self.peers.operator_user_created:
+            event.defer()
+            return
+
+        if not self.unit_in_cluster(event.nodename):
+            logging.debug(f"{event.nodename} is not in cluster yet.")
+            event.defer()
+            return
+
+        if self.unit.is_leader():
+            self.grow_queues_onto_unit(event.nodename)
+            api = self._get_admin_api()
+            api.rebalance_queues()
+        self._on_update_status(event)
+
+    def _on_add_member_action(self, event) -> None:
+        """Handle add_member charm action."""
+        api = self._get_admin_api()
+        api.add_member(
+            self.generate_nodename(event.params["unit-name"]),
+            event.params.get("vhost"),
+            event.params["queue-name"],
+        )
+        self._on_update_status(event)
+
+    def _on_delete_member_action(self, event) -> None:
+        """Handle delete_member charm action."""
+        api = self._get_admin_api()
+        api.delete_member(
+            self.generate_nodename(event.params["unit-name"]),
+            event.params.get("vhost"),
+            event.params["queue-name"],
+        )
         self._on_update_status(event)
 
     def _on_ready_amqp_clients(self, event) -> None:
@@ -490,7 +646,7 @@ class RabbitMQOperatorCharm(CharmBase):
 
     def _get_admin_api(
         self, username: str = None, password: str = None
-    ) -> rabbitmq_admin.AdminAPI:
+    ) -> rabbit_extended_api.ExtendedAdminApi:
         """Return an administrative API for RabbitMQ.
 
         :username: Username to access RMQ API
@@ -501,7 +657,7 @@ class RabbitMQOperatorCharm(CharmBase):
         """
         username = username or self._operator_user
         password = password or self._operator_password
-        return rabbitmq_admin.AdminAPI(
+        return rabbit_extended_api.ExtendedAdminApi(
             url=self._rabbitmq_mgmt_url, auth=(username, password)
         )
 
@@ -594,10 +750,16 @@ queue_master_locator = min-masters
             "/etc/rabbitmq/rabbitmq.conf", rabbitmq_conf, make_dirs=True
         )
 
+    def generate_nodename(self, unit_name) -> str:
+        """K8S DNS nodename for local unit."""
+        return (
+            f"rabbit@{unit_name.replace('/', '-')}.{self.app.name}-endpoints"
+        )
+
     @property
     def nodename(self) -> str:
         """K8S DNS nodename for local unit."""
-        return f"{self.unit.name.replace('/', '-')}.{self.app.name}-endpoints"
+        return self.generate_nodename(self.unit.name)
 
     def _render_and_push_rabbitmq_env(self) -> None:
         """Render and push rabbitmq-env conf.
@@ -607,7 +769,7 @@ queue_master_locator = min-masters
         container = self.unit.get_container(RABBITMQ_CONTAINER)
         rabbitmq_env = f"""
 # Sane configuration defaults for running under K8S
-NODENAME=rabbit@{self.nodename}
+NODENAME={self.nodename}
 USE_LONGNAME=true
 """
         logger.info("Pushing new rabbitmq-env.conf")
@@ -624,6 +786,24 @@ USE_LONGNAME=true
             "operator-password": self._operator_password,
         }
         event.set_results(data)
+
+    def _manage_queues(self) -> bool:
+        """Whether the charm should manage queue membership."""
+        return bool(self.config.get("minimum-replicas"))
+
+    def min_replicas(self) -> int:
+        """The minimum number of replicas a queue should have."""
+        return self.config.get("minimum-replicas")
+
+    def get_undersized_queues(self) -> List[str]:
+        """Return a list of queues which have fewer members than minimum."""
+        api = self._get_admin_api()
+        undersized_queues = [
+            q
+            for q in api.list_queues()
+            if len(q["members"]) < self.min_replicas()
+        ]
+        return undersized_queues
 
     def _on_update_status(self, event) -> None:
         """Update status.
@@ -648,6 +828,15 @@ USE_LONGNAME=true
 
         if self._stored.rabbitmq_version:
             self.unit.set_workload_version(self._stored.rabbitmq_version)
+
+        if self.unit.is_leader() and self._manage_queues():
+            undersized_queues = self.get_undersized_queues()
+            if undersized_queues:
+                self.unit.status = ActiveStatus(
+                    f"WARNING: {len(undersized_queues)} Queue(s) with insufficient members"
+                )
+                return
+
         self.unit.status = ActiveStatus()
 
     def create_amqp_credentials(

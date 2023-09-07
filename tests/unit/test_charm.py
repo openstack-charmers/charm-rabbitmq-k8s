@@ -19,6 +19,7 @@ import unittest
 from unittest.mock import (
     MagicMock,
     Mock,
+    call,
     patch,
 )
 
@@ -41,10 +42,12 @@ class TestCharm(unittest.TestCase):
         self.harness.begin()
 
         # Setup RabbitMQ API mocking
-        mock_admin_api = MagicMock()
-        mock_admin_api.overview.return_value = {"product_version": "3.19.2"}
+        self.mock_admin_api = MagicMock()
+        self.mock_admin_api.overview.return_value = {
+            "product_version": "3.19.2"
+        }
         self.harness.charm._get_admin_api = Mock()
-        self.harness.charm._get_admin_api.return_value = mock_admin_api
+        self.harness.charm._get_admin_api.return_value = self.mock_admin_api
 
         # network_get is not implemented in the testing harness
         # so mock out for now
@@ -157,4 +160,148 @@ class TestCharm(unittest.TestCase):
         self.harness.charm.on.update_status.emit()
         self.assertEqual(
             self.harness.model.unit.status, ops.model.ActiveStatus()
+        )
+
+    def test_get_queue_growth_selector(self):
+        """Test the method chosen to grow a queue."""
+        # 1->2
+        self.assertEqual(
+            self.harness.charm.get_queue_growth_selector(1, 1), "all"
+        )
+
+        # 1->2
+        # 2->3
+        self.assertEqual(
+            self.harness.charm.get_queue_growth_selector(1, 2), "all"
+        )
+
+        # 1->2
+        # 2->3
+        # 3->3
+        self.assertEqual(
+            self.harness.charm.get_queue_growth_selector(1, 3), "individual"
+        )
+
+        # 2->3
+        self.assertEqual(
+            self.harness.charm.get_queue_growth_selector(2, 2), "all"
+        )
+
+        # 2->3
+        # 3->3
+        self.assertEqual(
+            self.harness.charm.get_queue_growth_selector(2, 3), "even"
+        )
+
+        # 3->3
+        self.assertEqual(
+            self.harness.charm.get_queue_growth_selector(3, 3), "even"
+        )
+
+        # 3->3
+        # 4->5
+        # 5->5
+        self.assertEqual(
+            self.harness.charm.get_queue_growth_selector(3, 5), "even"
+        )
+
+        # 4->5
+        self.assertEqual(
+            self.harness.charm.get_queue_growth_selector(4, 4), "even"
+        )
+
+    def test_generate_nodename(self):
+        """Test conversion of unit name to rabbit node name."""
+        self.assertEqual(
+            self.harness.charm.generate_nodename("unit/1"),
+            "rabbit@unit-1.rabbitmq-k8s-endpoints",
+        )
+
+    def test_unit_in_cluster(self):
+        """Test check whether unit is in rabbit cluster."""
+        self.mock_admin_api.list_nodes.return_value = [
+            {"name": "rabbit@unit-1.rabbitmq-k8s-endpoints"}
+        ]
+        self.assertTrue(self.harness.charm.unit_in_cluster("unit/1"))
+        self.assertFalse(self.harness.charm.unit_in_cluster("unit/2"))
+
+    def test_grow_queues_onto_unit(self):
+        """Test growing a queue onto a unit."""
+        queue_one_member = {
+            "name": "queue1",
+            "vhost": "openstack",
+            "members": ["node1"],
+        }
+        queue_two_member = {
+            "name": "queue2",
+            "vhost": "openstack",
+            "members": ["node1", "node2"],
+        }
+        queue_three_member = {
+            "name": "queue3",
+            "vhost": "openstack",
+            "members": ["node1", "node2", "node3"],
+        }
+        self.mock_admin_api.list_queues.return_value = [queue_one_member]
+        self.harness.charm.grow_queues_onto_unit("unit/1")
+        self.mock_admin_api.grow_queue.assert_called_once_with(
+            "rabbit@unit-1.rabbitmq-k8s-endpoints", "all"
+        )
+
+        self.mock_admin_api.grow_queue.reset_mock()
+        self.mock_admin_api.list_queues.return_value = [
+            queue_two_member,
+            queue_three_member,
+        ]
+        self.harness.charm.grow_queues_onto_unit("unit/1")
+        self.mock_admin_api.grow_queue.assert_called_once_with(
+            "rabbit@unit-1.rabbitmq-k8s-endpoints", "even"
+        )
+
+        self.mock_admin_api.grow_queue.reset_mock()
+        self.mock_admin_api.list_queues.return_value = [
+            queue_one_member,
+            queue_two_member,
+            queue_three_member,
+        ]
+        self.harness.charm.grow_queues_onto_unit("unit/1")
+        self.mock_admin_api.add_member.assert_has_calls(
+            [
+                call(
+                    "rabbit@unit-1.rabbitmq-k8s-endpoints",
+                    "openstack",
+                    "queue1",
+                ),
+                call(
+                    "rabbit@unit-1.rabbitmq-k8s-endpoints",
+                    "openstack",
+                    "queue2",
+                ),
+            ]
+        )
+
+    def test_add_member_action(self):
+        """Test actions for adding member to queue."""
+        action_event = MagicMock()
+        action_event.params = {
+            "unit-name": "unit/1",
+            "vhost": "/",
+            "queue-name": "test_queue",
+        }
+        self.harness.charm._on_add_member_action(action_event)
+        self.mock_admin_api.add_member.assert_called_once_with(
+            "rabbit@unit-1.rabbitmq-k8s-endpoints", "/", "test_queue"
+        )
+
+    def test_delete_member_action(self):
+        """Test actions for adding member to queue."""
+        action_event = MagicMock()
+        action_event.params = {
+            "unit-name": "unit/1",
+            "vhost": "/",
+            "queue-name": "test_queue",
+        }
+        self.harness.charm._on_delete_member_action(action_event)
+        self.mock_admin_api.delete_member.assert_called_once_with(
+            "rabbit@unit-1.rabbitmq-k8s-endpoints", "/", "test_queue"
         )
