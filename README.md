@@ -2,7 +2,7 @@
 
 ## Description
 
-Charmed [RabbitMQ][rabbitmq-upstream] operator for Kubernetes.
+[RabbitMQ][rabbitmq-upstream] 3.9 charm for Kubernetes.
 
 RabbitMQ is an open source multi-protocol messaging broker. The charmed
 RabbitMQ operator deploys RabbitMQ as a workload on Kubernetes. It grants
@@ -18,7 +18,7 @@ begin using the message broker immediately.
 #### Simple deployment
 
 ```
- juju deploy --trust rabbitmq-k8s
+ juju deploy --channel 3.9 --trust rabbitmq-k8s
  juju deploy --trust traefik-k8s
  juju add-relation rabbitmq-k8s traefik-k8s
 ```
