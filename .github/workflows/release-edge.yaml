@@ -1,9 +1,9 @@
-name: Release to Edge
+name: "Release to Edge [3.9]"
 
 on:
   push:
     branches:
-      - main
+      - stable/3.9
 
 jobs:
   lint:
