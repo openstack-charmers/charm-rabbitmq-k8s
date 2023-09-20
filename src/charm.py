@@ -395,7 +395,7 @@ class RabbitMQOperatorCharm(CharmBase):
         """Grow any undersized queues onto unit."""
         api = self._get_admin_api()
         joining_node = self.generate_nodename(unit)
-        queue_members = [len(q["members"]) for q in api.list_queues()]
+        queue_members = [len(q["members"]) for q in api.list_quorum_queues()]
         if not queue_members:
             logging.debug("No queues found, queue growth skipped")
         queue_members.sort()
@@ -808,7 +808,7 @@ USE_LONGNAME=true
         api = self._get_admin_api()
         undersized_queues = [
             q
-            for q in api.list_queues()
+            for q in api.list_quorum_queues()
             if len(q["members"]) < self.min_replicas()
         ]
         return undersized_queues
