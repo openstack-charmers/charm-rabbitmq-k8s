@@ -242,14 +242,16 @@ class TestCharm(unittest.TestCase):
             "vhost": "openstack",
             "members": ["node1", "node2", "node3"],
         }
-        self.mock_admin_api.list_queues.return_value = [queue_one_member]
+        self.mock_admin_api.list_quorum_queues.return_value = [
+            queue_one_member
+        ]
         self.harness.charm.grow_queues_onto_unit("unit/1")
         self.mock_admin_api.grow_queue.assert_called_once_with(
             "rabbit@unit-1.rabbitmq-k8s-endpoints", "all"
         )
 
         self.mock_admin_api.grow_queue.reset_mock()
-        self.mock_admin_api.list_queues.return_value = [
+        self.mock_admin_api.list_quorum_queues.return_value = [
             queue_two_member,
             queue_three_member,
         ]
@@ -259,7 +261,7 @@ class TestCharm(unittest.TestCase):
         )
 
         self.mock_admin_api.grow_queue.reset_mock()
-        self.mock_admin_api.list_queues.return_value = [
+        self.mock_admin_api.list_quorum_queues.return_value = [
             queue_one_member,
             queue_two_member,
             queue_three_member,

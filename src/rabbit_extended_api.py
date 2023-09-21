@@ -19,6 +19,10 @@
 
 import json
 import urllib
+from typing import (
+    Dict,
+    List,
+)
 
 import rabbitmq_admin
 
@@ -27,8 +31,14 @@ class ExtendedAdminApi(rabbitmq_admin.AdminAPI):
     """Extend rabbitmq_admin.AdminAPI to cover missing endpoints the charm needs."""
 
     def list_queues(self):
-        """A list of nodes in the RabbitMQ cluster."""
+        """A list of queues."""
         return self._api_get("/api/queues")
+
+    def list_quorum_queues(self) -> List[Dict]:
+        """A list of quorum queues."""
+        return [
+            q for q in self._api_get("/api/queues") if q["type"] == "quorum"
+        ]
 
     def get_queue(self, vhost, queue):
         """A list of nodes in the RabbitMQ cluster."""
