@@ -398,6 +398,7 @@ class RabbitMQOperatorCharm(CharmBase):
         queue_members = [len(q["members"]) for q in api.list_quorum_queues()]
         if not queue_members:
             logging.debug("No queues found, queue growth skipped")
+            return
         queue_members.sort()
         selector = self.get_queue_growth_selector(
             queue_members[0], queue_members[-1]
