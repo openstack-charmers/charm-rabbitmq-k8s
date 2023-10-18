@@ -131,6 +131,10 @@ class RabbitMQOperatorCharm(CharmBase):
             self.amqp_provider.on.ready_amqp_clients,
             self._on_ready_amqp_clients,
         )
+        self.framework.observe(
+            self.amqp_provider.on.gone_away_amqp_clients,
+            self._on_gone_away_amqp_clients,
+        )
 
         self._stored.set_default(enabled_plugins=[])
         self._stored.set_default(rabbitmq_version=None)
@@ -460,6 +464,19 @@ class RabbitMQOperatorCharm(CharmBase):
     def _on_ready_amqp_clients(self, event) -> None:
         """Event handler on AMQP clients ready."""
         self._on_update_status(event)
+
+    def _on_gone_away_amqp_clients(self, event) -> None:
+        """Event handler on AMQP clients goneaway."""
+        if not self.unit.is_leader():
+            logging.debug("Not a leader unit, nothing to do")
+            return
+
+        api = self._get_admin_api()
+        username = self.amqp_provider.username(event)
+        if username and self.does_user_exist(username):
+            api.delete_user(username)
+
+        self.peers.delete_user(username)
 
     @property
     def amqp_rel(self) -> Relation:

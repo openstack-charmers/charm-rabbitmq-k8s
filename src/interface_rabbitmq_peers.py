@@ -169,6 +169,11 @@ class RabbitMQOperatorPeers(Object):
         logging.debug(f"Storing password for {username}")
         self.peers_rel.data[self.peers_rel.app][username] = password
 
+    def delete_user(self, username: str):
+        """Delete username from application data."""
+        if username in self.peers_rel.data[self.peers_rel.app]:
+            del self.peers_rel.data[self.peers_rel.app][username]
+
     def set_nodename(self, nodename: str):
         """Advertise nodename to peers."""
         logging.debug(f"Setting nodename {nodename}")
