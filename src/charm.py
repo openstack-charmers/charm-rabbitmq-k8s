@@ -74,6 +74,7 @@ RABBITMQ_CONTAINER = "rabbitmq"
 RABBITMQ_SERVICE = "rabbitmq"
 RABBITMQ_USER = "rabbitmq"
 RABBITMQ_GROUP = "rabbitmq"
+RABBITMQ_DATA_DIR = "/var/lib/rabbitmq"
 RABBITMQ_COOKIE_PATH = "/var/lib/rabbitmq/.erlang.cookie"
 
 SELECTOR_ALL = "all"
@@ -200,6 +201,9 @@ class RabbitMQOperatorCharm(CharmBase):
             logger.debug("Waiting for binding address on peers interface")
             event.defer()
             return
+
+        # Change ownership of /var/lib/rabbitmq
+        self._set_ownership_on_data_dir()
 
         # Render and push configuration files
         self._render_and_push_config_files()
@@ -710,6 +714,34 @@ class RabbitMQOperatorCharm(CharmBase):
         # We do not want to leave a known user/pass available
         logging.warning("Deleting the guest user.")
         api.delete_user("guest")
+
+    def _set_ownership_on_data_dir(self) -> None:
+        """Set ownership on /var/lib/rabbitmq."""
+        container = self.unit.get_container(RABBITMQ_CONTAINER)
+        paths = container.list_files(RABBITMQ_DATA_DIR, itself=True)
+        if len(paths) == 0:
+            return
+
+        logger.debug(
+            f"rabbitmq lib directory ownership: {paths[0].user}:{paths[0].group}"
+        )
+        if paths[0].user != RABBITMQ_USER or paths[0].group != RABBITMQ_GROUP:
+            logger.debug(
+                f"Changing ownership to {RABBITMQ_USER}:{RABBITMQ_GROUP}"
+            )
+            try:
+                container.exec(
+                    [
+                        "chown",
+                        "-R",
+                        f"{RABBITMQ_USER}:{RABBITMQ_GROUP}",
+                        RABBITMQ_DATA_DIR,
+                    ]
+                )
+            except ExecError as e:
+                logger.error(
+                    f"Exited with code {e.exit_code}. Stderr:\n{e.stderr}"
+                )
 
     def _render_and_push_config_files(self) -> None:
         """Render and push configuration files.

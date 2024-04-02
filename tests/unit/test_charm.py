@@ -66,6 +66,7 @@ class TestCharm(unittest.TestCase):
         """Test pebble handler."""
         # self.harness.charm._render_and_push_config_files = Mock()
         # self.harness.charm._render_and_push_plugins = Mock()
+        self.harness.charm._set_ownership_on_data_dir = Mock()
         # Check the initial Pebble plan is empty
         self.harness.set_can_connect("rabbitmq", True)
         initial_plan = self.harness.get_container_pebble_plan("rabbitmq")
