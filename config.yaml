@@ -6,3 +6,7 @@ options:
     default: 3
     description: Minimum number of queues replicas, set to 0 to disable charm automatically managing queue replicas
     type: int
+  auto-ha-frequency:
+    default: 30
+    description: Frequency in minutes to check for queues that need HA members added
+    type: int

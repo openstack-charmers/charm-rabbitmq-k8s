@@ -17,12 +17,15 @@
 
 """RabbitMQ Operator Charm."""
 
+import collections
 import logging
+import textwrap
 from ipaddress import (
     IPv4Address,
     IPv6Address,
 )
 from typing import (
+    Dict,
     List,
     Union,
 )
@@ -45,6 +48,7 @@ from lightkube.models.core_v1 import (
 from ops.charm import (
     ActionEvent,
     CharmBase,
+    PebbleCustomNoticeEvent,
 )
 from ops.framework import (
     EventBase,
@@ -83,6 +87,12 @@ SELECTOR_EVEN = "even"
 SELECTOR_INDIVIDUAL = "individual"
 
 EPMD_SERVICE = "epmd"
+NOTIFIER_SERVICE = "notifier"
+TIMER_NOTICE = "rabbitmq.local/timer"
+
+
+class RabbitOperatorError(Exception):
+    """Common base class for all RabbitMQ Operator exceptions."""
 
 
 class RabbitMQOperatorCharm(CharmBase):
@@ -165,6 +175,15 @@ class RabbitMQOperatorCharm(CharmBase):
             self.on.get_service_account_action, self._get_service_account
         )
 
+        self.framework.observe(
+            self.on.ensure_queue_ha_action, self._ensure_queue_ha_action
+        )
+
+        self.framework.observe(
+            self.on[RABBITMQ_CONTAINER].pebble_custom_notice,
+            self._on_pebble_custom_notice,
+        )
+
     def _pebble_ready(self) -> bool:
         """Check whether RabbitMQ container is up and configurable."""
         return self.unit.get_container(RABBITMQ_CONTAINER).can_connect()
@@ -208,6 +227,9 @@ class RabbitMQOperatorCharm(CharmBase):
         # Render and push configuration files
         self._render_and_push_config_files()
 
+        # Render and push notifier script
+        notifier_changed = self._render_and_push_pebble_notifier()
+
         # Get the rabbitmq container so we can configure/manipulate it
         container = self.unit.get_container(RABBITMQ_CONTAINER)
 
@@ -231,6 +253,10 @@ class RabbitMQOperatorCharm(CharmBase):
             container.autostart()
         else:
             logging.debug("RabbitMQ service is running")
+
+        # If the notifier script has changed, restart the notifier service
+        if notifier_changed:
+            container.restart(NOTIFIER_SERVICE)
 
         @tenacity.retry(
             wait=tenacity.wait_exponential(multiplier=1, min=4, max=10)
@@ -271,6 +297,12 @@ class RabbitMQOperatorCharm(CharmBase):
                     "startup": "enabled",
                     "user": RABBITMQ_USER,
                     "group": RABBITMQ_GROUP,
+                },
+                NOTIFIER_SERVICE: {
+                    "override": "replace",
+                    "summary": "Pebble notifier",
+                    "command": "/usr/bin/notifier",
+                    "startup": "enabled",
                 },
             },
         }
@@ -481,6 +513,27 @@ class RabbitMQOperatorCharm(CharmBase):
             api.delete_user(username)
 
         self.peers.delete_user(username)
+
+    def _on_pebble_custom_notice(self, event: PebbleCustomNoticeEvent):
+        """Handle pebble custom notice event."""
+        if event.notice.key == TIMER_NOTICE:
+            if not self.unit.is_leader():
+                logger.debug("Not a leader unit, nothing to do")
+                return
+            if not self._manage_queues():
+                logger.debug("Queue management disabled, nothing to do")
+                return
+            if not self.rabbit_running:
+                logger.debug("RabbitMQ not running, deferring")
+                event.defer()
+                return
+            if not self.peers.operator_user_created:
+                logger.debug("Operator user not created, deferring")
+                event.defer()
+                return
+            self.ensure_queue_ha()
+            self._on_update_status(event)
+            return
 
     @property
     def amqp_rel(self) -> Relation:
@@ -808,6 +861,38 @@ log.file = false
             "/etc/rabbitmq/rabbitmq.conf", rabbitmq_conf, make_dirs=True
         )
 
+    def _render_and_push_pebble_notifier(self) -> bool:
+        """Render notifier script and push to workload container."""
+        auto_ha_frequency = int(self.config["auto-ha-frequency"])
+        if auto_ha_frequency < 1:
+            msg = "auto-ha-frequency must be greater than 0"
+            logger.error(msg)
+            raise RabbitOperatorError(msg)
+        container = self.unit.get_container(RABBITMQ_CONTAINER)
+        notifier = textwrap.dedent(
+            f"""#!/bin/bash
+            while true; do
+                echo "Next event at $(date -d '+{auto_ha_frequency} minutes')"
+                sleep {auto_ha_frequency*60}
+                echo "Notifying operator of timer event"
+                /charm/bin/pebble notify {TIMER_NOTICE}
+            done
+            """
+        )
+        try:
+            with container.pull("/usr/bin/notifier") as stream:
+                content = stream.read()
+        except PathError:
+            content = None
+        if content == notifier:
+            logger.debug("Notifier script unchanged, skipping push")
+            return False
+        logger.info("Pushing new notifier script")
+        container.push(
+            "/usr/bin/notifier", notifier, make_dirs=True, permissions=0o755
+        )
+        return True
+
     def generate_nodename(self, unit_name) -> str:
         """K8S DNS nodename for local unit."""
         return (
@@ -853,7 +938,7 @@ USE_LONGNAME=true
         """The minimum number of replicas a queue should have."""
         return self.config.get("minimum-replicas")
 
-    def get_undersized_queues(self) -> List[str]:
+    def get_undersized_queues(self) -> List[dict]:
         """Return a list of queues which have fewer members than minimum."""
         api = self._get_admin_api()
         undersized_queues = [
@@ -989,6 +1074,152 @@ USE_LONGNAME=true
             msg = f"Rabbitmq is not ready. Errno: {e.errno}"
             logging.error(msg)
             event.fail(msg)
+
+    def _add_members_to_undersized_queues(
+        self,
+        api: rabbit_extended_api.ExtendedAdminApi,
+        nodes: list[str],
+        undersized_queues: List[dict],
+        replicas: int,
+        dry_run: bool,
+    ) -> List[str]:
+        """Add members to undersized queues.
+
+        Simple algorithm to select nodes with fewest queues to add replicas on.
+        """
+        queues = api.list_quorum_queues()
+
+        nodes_queues_count = collections.Counter({node: 0 for node in nodes})
+        # Get a count of how many queues each node is a member of
+        for queue in queues:
+            for member in queue["members"]:
+                nodes_queues_count[member] += 1
+
+        replicated_queues = []
+        for queue in undersized_queues:
+            needed_replicas = replicas - len(queue["members"])
+            # select node with fewest queues
+            sorted_count = nodes_queues_count.most_common()
+            node_candidates = []
+            for node, _ in reversed(sorted_count):
+                if node not in queue["members"]:
+                    node_candidates.append(node)
+                if len(node_candidates) >= needed_replicas:
+                    break
+            if len(node_candidates) < needed_replicas:
+                logger.warning(
+                    "Not enough nodes found to replicate queue %s to HA,"
+                    " availables nodes: %s, needed nodes %s",
+                    queue["name"],
+                    len(node_candidates),
+                    needed_replicas,
+                )
+            logger.debug(
+                "Replicating queue %r to nodes %s, dry_run=%s",
+                queue["name"],
+                ", ".join(node_candidates),
+                dry_run,
+            )
+            if not dry_run:
+                for node in node_candidates:
+                    api.add_member(node, queue["vhost"], queue["name"])
+                    nodes_queues_count[node] += 1
+                replicated_queues.append(queue["name"])
+        logger.info(
+            "Replicated %s queues to ensure HA, dry_run=%s",
+            len(replicated_queues),
+            dry_run,
+        )
+        return replicated_queues
+
+    def ensure_queue_ha(self, dry_run: bool = False) -> Dict[str, int]:
+        """Ensure queue has HA.
+
+        The role of this function is to ensure that all queues are available on
+        at least the minimum number of replicas. If there is not enough nodes to
+        support the minimum number of replicas, then this function will early
+        exit and not replicate any queues.
+
+        Must be called on the leader.
+
+        :param dry_run: Whether to perform a dry run
+        """
+        undersized_queues = self.get_undersized_queues()
+        if len(undersized_queues) < 1:
+            msg = "No undersized queues found"
+            logger.debug(msg)
+            return {
+                "undersized-queues": 0,
+                "replicated-queues": 0,
+            }
+
+        api = self._get_admin_api()
+        nodes = [node["name"] for node in api.list_nodes()]
+        min_replicas = self.min_replicas()
+
+        if len(nodes) < min_replicas:
+            msg = (
+                "Not enough nodes to ensure queue HA, availables nodes:"
+                f" {len(nodes)}, needed nodes {min_replicas}"
+            )
+            logger.debug(msg)
+            raise RabbitOperatorError(msg)
+
+        replicated_queues = self._add_members_to_undersized_queues(
+            api, nodes, undersized_queues, min_replicas, dry_run
+        )
+
+        if len(replicated_queues) > 0:
+            logger.debug("Rebalancing queues")
+            api.rebalance_queues()
+
+        return {
+            "undersized-queues": len(undersized_queues),
+            "replicated-queues": len(replicated_queues),
+        }
+
+    def _ensure_queue_ha_action(self, event: ActionEvent) -> None:
+        """Ensure queue has HA action.
+
+        :param event: The current event
+        """
+        if not self.unit.is_leader():
+            msg = "Not leader unit, unable to ensure queue HA"
+            logger.error(msg)
+            event.fail(msg)
+            return
+
+        if not self.rabbit_running:
+            msg = "RabbitMQ not running, unable to ensure queue HA"
+            logger.error(msg)
+            event.fail(msg)
+            return
+
+        if not self.peers.operator_user_created:
+            msg = "Operator user not created, unable to ensure queue HA"
+            logger.error(msg)
+            event.fail(msg)
+            return
+
+        if not self._manage_queues():
+            msg = "Queue management is disabled, unable to ensure queue HA"
+            logger.error(msg)
+            event.fail(msg)
+            return
+
+        dry_run = event.params.get("dry-run", False)
+        try:
+            result = self.ensure_queue_ha(dry_run=dry_run)
+        except RabbitOperatorError as e:
+            event.fail(str(e))
+            return
+        event.set_results(
+            {
+                **result,
+                "dry-run": dry_run,
+            }
+        )
+        self._on_update_status(event)
 
 
 if __name__ == "__main__":
