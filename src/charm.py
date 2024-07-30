@@ -33,6 +33,9 @@ from typing import (
 import pwgen
 import requests
 import tenacity
+from charms.loki_k8s.v1.loki_push_api import (
+    LogForwarder,
+)
 from charms.observability_libs.v1.kubernetes_service_patch import (
     KubernetesServicePatch,
 )
@@ -170,6 +173,8 @@ class RabbitMQOperatorCharm(CharmBase):
             "ingress",
             port=15672,
         )
+        # Logging relation
+        self.logging = LogForwarder(self, relation_name="logging")
 
         self.framework.observe(
             self.on.get_service_account_action, self._get_service_account
