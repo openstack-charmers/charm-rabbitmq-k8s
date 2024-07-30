@@ -131,7 +131,7 @@ class RabbitMQOperatorPeers(Object):
     def on_broken(self, event):
         """Relation broken event handler."""
         logging.debug("RabbitMQOperatorPeers on_broken")
-        self.on.gonewaway.emit()
+        self.on.goneaway.emit()
 
     def on_departed(self, event):
         """Relation broken event handler."""

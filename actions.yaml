@@ -22,7 +22,7 @@ get-service-account:
 
 ensure-queue-ha:
   description: |
-    Check for queues that have insufficent memebers for high
+    Check for queues that have insufficent members for high
     availability and, if possible, add members to them.
   params:
     dry-run:

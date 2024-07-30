@@ -83,6 +83,12 @@ class TestCharm(unittest.TestCase):
                     "group": "rabbitmq",
                     "requires": ["epmd"],
                 },
+                "notifier": {
+                    "command": "/usr/bin/notifier",
+                    "override": "replace",
+                    "startup": "enabled",
+                    "summary": "Pebble notifier",
+                },
                 "epmd": {
                     "override": "replace",
                     "summary": "Erlang EPM service",
@@ -307,4 +313,110 @@ class TestCharm(unittest.TestCase):
         self.harness.charm._on_delete_member_action(action_event)
         self.mock_admin_api.delete_member.assert_called_once_with(
             "rabbit@unit-1.rabbitmq-k8s-endpoints", "/", "test_queue"
+        )
+
+    def test_ensure_ha_is_called_when_unit_is_leader_and_ready(self):
+        """Test the notifier custom notice."""
+        self.harness.set_leader(True)
+        self.harness.set_can_connect(charm.RABBITMQ_CONTAINER, True)
+        peers_relation_id = self.harness.add_relation("peers", "rabbitmq-k8s")
+        self.harness.add_relation_unit(peers_relation_id, "rabbitmq-k8s/0")
+        self.harness.update_relation_data(
+            peers_relation_id,
+            self.harness.charm.app.name,
+            {
+                "operator_password": "foobar",
+                "operator_user_created": "rmqadmin",
+                "erlang_cookie": "magicsecurity",
+            },
+        )
+        self.harness.charm.ensure_queue_ha = Mock()
+        self.harness.pebble_notify(
+            charm.RABBITMQ_CONTAINER, charm.TIMER_NOTICE
+        )
+        self.harness.charm.ensure_queue_ha.assert_called_once()
+
+    def test_ensure_ha_is_not_called_when_unit_is_not_leader(self):
+        """Test the notifier custom notice when not leader."""
+        self.harness.set_leader(False)
+        self.harness.set_can_connect(charm.RABBITMQ_CONTAINER, True)
+        peers_relation_id = self.harness.add_relation("peers", "rabbitmq-k8s")
+        self.harness.add_relation_unit(peers_relation_id, "rabbitmq-k8s/0")
+        self.harness.update_relation_data(
+            peers_relation_id,
+            self.harness.charm.app.name,
+            {
+                "operator_password": "foobar",
+                "operator_user_created": "rmqadmin",
+                "erlang_cookie": "magicsecurity",
+            },
+        )
+        self.harness.charm.ensure_queue_ha = Mock()
+        self.harness.pebble_notify(
+            charm.RABBITMQ_CONTAINER, charm.TIMER_NOTICE
+        )
+        self.harness.charm.ensure_queue_ha.assert_not_called()
+
+    def test_no_undersized_queues(self):
+        """Test nothing is done when no undersized queues."""
+        self.mock_admin_api.list_quorum_queues.return_value = []
+        nodes = ["node1", "node2", "node3"]
+        undersized_queues = []
+
+        result = self.harness.charm._add_members_to_undersized_queues(
+            self.mock_admin_api, nodes, undersized_queues, 3, False
+        )
+        self.assertEqual(result, [])
+
+    def test_not_enough_nodes_to_replicate(self):
+        """Test that the queues are still added to existing nodes.
+
+        Even if there are not enough nodes to replicate, the charm will add to
+        existing nodes if they are some available.
+        """
+        queues = [{"name": "queue1", "members": ["node1"], "vhost": "/"}]
+        self.mock_admin_api.list_quorum_queues.return_value = queues
+        nodes = ["node1", "node2"]
+        undersized_queues = queues
+
+        result = self.harness.charm._add_members_to_undersized_queues(
+            self.mock_admin_api, nodes, undersized_queues, 3, False
+        )
+        self.assertEqual(result, ["queue1"])
+        self.mock_admin_api.add_member.assert_called_once_with(
+            "node2", "/", "queue1"
+        )
+
+    def test_exact_number_of_nodes_needed(self):
+        """Test that the queues are added to the correct nodes.
+
+        Order matters since the algorithm will to the node with the least
+        members first.
+        """
+        self.mock_admin_api.list_quorum_queues.return_value = [
+            {"name": "queue1", "members": ["node1"], "vhost": "/"},
+            {"name": "queue2", "members": ["node2"], "vhost": "/"},
+            {
+                "name": "queue3",
+                "members": ["node1", "node2", "node3"],
+                "vhost": "/",
+            },
+        ]
+        nodes = ["node1", "node2", "node3"]
+        undersized_queues = [
+            {"name": "queue1", "members": ["node1"], "vhost": "/"},
+            {"name": "queue2", "members": ["node2"], "vhost": "/"},
+        ]
+
+        result = self.harness.charm._add_members_to_undersized_queues(
+            self.mock_admin_api, nodes, undersized_queues, 3, False
+        )
+        self.assertEqual(result, ["queue1", "queue2"])
+        self.mock_admin_api.add_member.assert_has_calls(
+            [
+                call("node3", "/", "queue1"),
+                call("node2", "/", "queue1"),
+                call("node3", "/", "queue2"),
+                call("node1", "/", "queue2"),
+            ]
         )
