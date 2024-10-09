@@ -18,7 +18,7 @@ jobs:
         with:
           provider: microk8s
           channel: 1.26-strict/stable
-          juju-channel: 3.1/stable
+          juju-channel: 3/stable
           microk8s-addons: hostpath-storage dns rbac metallb:10.64.140.40-10.64.140.49
       - name: Install snaps
         run: |

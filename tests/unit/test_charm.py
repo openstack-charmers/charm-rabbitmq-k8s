@@ -15,6 +15,7 @@
 
 """Unit tests for RabbitMQ operator."""
 
+import os
 import unittest
 from unittest.mock import (
     MagicMock,
@@ -37,6 +38,7 @@ class TestCharm(unittest.TestCase):
     @patch("charm.KubernetesServicePatch", lambda _, service_type, ports: None)
     def setUp(self, *unused):
         """Setup test fixtures for unit tests."""
+        os.environ["JUJU_VERSION"] = "3.4.4"
         self.harness = Harness(charm.RabbitMQOperatorCharm)
         self.addCleanup(self.harness.cleanup)
         self.harness.begin()
