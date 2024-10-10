@@ -30,6 +30,7 @@ from typing import (
     Union,
 )
 
+import ops
 import pwgen
 import requests
 import tenacity
@@ -56,9 +57,6 @@ from ops.charm import (
 from ops.framework import (
     EventBase,
     StoredState,
-)
-from ops.main import (
-    main,
 )
 from ops.model import (
     ActiveStatus,
@@ -878,7 +876,7 @@ log.file = false
             f"""#!/bin/bash
             while true; do
                 echo "Next event at $(date -d '+{auto_ha_frequency} minutes')"
-                sleep {auto_ha_frequency*60}
+                sleep {auto_ha_frequency * 60}
                 echo "Notifying operator of timer event"
                 /charm/bin/pebble notify {TIMER_NOTICE}
             done
@@ -1228,4 +1226,4 @@ USE_LONGNAME=true
 
 
 if __name__ == "__main__":
-    main(RabbitMQOperatorCharm)
+    ops.main(RabbitMQOperatorCharm)
