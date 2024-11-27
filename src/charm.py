@@ -306,6 +306,9 @@ class RabbitMQOperatorCharm(CharmBase):
                     "summary": "Pebble notifier",
                     "command": "/usr/bin/notifier",
                     "startup": "enabled",
+                    # Workaround to avoid bug
+                    # https://github.com/canonical/pebble/issues/525
+                    "requires": [RABBITMQ_SERVICE],
                 },
             },
         }

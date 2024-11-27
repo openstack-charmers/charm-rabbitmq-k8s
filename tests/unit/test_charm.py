@@ -90,6 +90,7 @@ class TestCharm(unittest.TestCase):
                     "override": "replace",
                     "startup": "enabled",
                     "summary": "Pebble notifier",
+                    "requires": ["rabbitmq"],
                 },
                 "epmd": {
                     "override": "replace",
