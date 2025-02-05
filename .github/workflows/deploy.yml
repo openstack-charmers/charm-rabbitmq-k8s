@@ -33,7 +33,7 @@ jobs:
           sudo lxd init --auto
       - name: Build Charm
         run: |
-          sg lxd -c "charmcraft -v pack"
+          sudo --user $(whoami) --preserve-env charmcraft -v pack
           mv rabbitmq-k8s*charm rabbitmq-k8s.charm
       - name: Run functional tests
         run: |
