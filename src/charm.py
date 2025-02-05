@@ -37,17 +37,28 @@ import tenacity
 from charms.loki_k8s.v1.loki_push_api import (
     LogForwarder,
 )
-from charms.observability_libs.v1.kubernetes_service_patch import (
-    KubernetesServicePatch,
-)
 from charms.rabbitmq_k8s.v0.rabbitmq import (
     RabbitMQProvides,
 )
 from charms.traefik_k8s.v1.ingress import (
     IngressPerAppRequirer,
 )
+from lightkube.core.client import (
+    Client,
+)
 from lightkube.models.core_v1 import (
     ServicePort,
+    ServiceSpec,
+)
+from lightkube.models.meta_v1 import (
+    ObjectMeta,
+)
+from lightkube.resources.core_v1 import (
+    Service,
+)
+from lightkube_extensions.batch import (
+    KubernetesResourceManager,
+    create_charm_default_labels,
 )
 from ops.charm import (
     ActionEvent,
@@ -91,6 +102,10 @@ EPMD_SERVICE = "epmd"
 NOTIFIER_SERVICE = "notifier"
 TIMER_NOTICE = "rabbitmq.local/timer"
 
+LB_LABEL = "rabbitmq-loadbalancer"
+RABBITMQ_SERVICE_PORT = 5672
+RABBITMQ_MANAGEMENT_PORT = 15672
+
 
 class RabbitOperatorError(Exception):
     """Common base class for all RabbitMQ Operator exceptions."""
@@ -105,6 +120,21 @@ class RabbitMQOperatorCharm(CharmBase):
     def __init__(self, *args):
         super().__init__(*args)
 
+        self._lightkube_client = None
+        self._lightkube_field_manager: str = self.app.name
+        self._lb_name: str = f"{self.app.name}-lb"
+
+        # Open ports on default cluster IP
+        # OpenStack services uses cluster IP from service rabbitmq
+        self.unit.set_ports(RABBITMQ_SERVICE_PORT, RABBITMQ_MANAGEMENT_PORT)
+
+        # As the service ports are not dynamic, loadbalancer need not
+        # be created/patched on upgrade-hook or update-status hook
+        # In case the service ports are modified, _reconcile_lb should
+        # run on upgrade-hook
+        # NOTE(jamespage): This should become part of what Juju
+        # does at some point in time.
+        self.framework.observe(self.on.install, self._reconcile_lb)
         self.framework.observe(
             self.on.rabbitmq_pebble_ready, self._on_config_changed
         )
@@ -147,6 +177,7 @@ class RabbitMQOperatorCharm(CharmBase):
             self.amqp_provider.on.gone_away_amqp_clients,
             self._on_gone_away_amqp_clients,
         )
+        self.framework.observe(self.on.remove, self._on_remove)
 
         self._stored.set_default(enabled_plugins=[])
         self._stored.set_default(rabbitmq_version=None)
@@ -154,22 +185,11 @@ class RabbitMQOperatorCharm(CharmBase):
         self._enable_plugin("rabbitmq_management")
         self._enable_plugin("rabbitmq_peer_discovery_k8s")
 
-        # NOTE(jamespage): This should become part of what Juju
-        # does at some point in time.
-        self.service_patcher = KubernetesServicePatch(
-            self,
-            ports=[
-                ServicePort(5672, name="amqp"),
-                ServicePort(15672, name="management"),
-            ],
-            service_type="LoadBalancer",
-        )
-
         # NOTE: ingress for management WebUI/API only
         self.management_ingress = IngressPerAppRequirer(
             self,
             "ingress",
-            port=15672,
+            port=RABBITMQ_MANAGEMENT_PORT,
         )
         # Logging relation
         self.logging = LogForwarder(self, relation_name="logging")
@@ -584,7 +604,7 @@ class RabbitMQOperatorCharm(CharmBase):
         """URL to access RabbitMQ unit."""
         return (
             f"rabbit://{username}:{password}"
-            f"@{self.ingress_address}:5672/{vhost}"
+            f"@{self.ingress_address}:{RABBITMQ_SERVICE_PORT}/{vhost}"
         )
 
     def does_user_exist(self, username: str) -> bool:
@@ -693,7 +713,7 @@ class RabbitMQOperatorCharm(CharmBase):
     def _rabbitmq_mgmt_url(self) -> str:
         """Management URL for RabbitMQ."""
         # Use localhost for admin ACL
-        return "http://localhost:15672"
+        return f"http://localhost:{RABBITMQ_MANAGEMENT_PORT}"
 
     @property
     def _operator_password(self) -> Union[str, None]:
@@ -1069,7 +1089,7 @@ USE_LONGNAME=true
                     "password": password,
                     "vhost": vhost,
                     "ingress-address": self.ingress_address,
-                    "port": 5672,
+                    "port": RABBITMQ_SERVICE_PORT,
                     "url": self.rabbitmq_url(username, password, vhost),
                 }
             )
@@ -1226,6 +1246,74 @@ USE_LONGNAME=true
             }
         )
         self._on_update_status(event)
+
+    @property
+    def _service_ports(self) -> List[ServicePort]:
+        """Kubernetes service ports to be opened for this workload.
+
+        We cannot use ops unit.open_port here because Juju will provision a ClusterIP
+        but we need LoadBalancer.
+        """
+        amqp = ServicePort(RABBITMQ_SERVICE_PORT, name="amqp")
+        management = ServicePort(RABBITMQ_MANAGEMENT_PORT, name="management")
+        return [amqp, management]
+
+    @property
+    def lightkube_client(self):
+        """Returns a lightkube client configured for this charm."""
+        if self._lightkube_client is None:
+            self._lightkube_client = Client(
+                namespace=self.model.name,
+                field_manager=self._lightkube_field_manager,
+            )
+        return self._lightkube_client
+
+    def _get_lb_resource_manager(self):
+        return KubernetesResourceManager(
+            labels=create_charm_default_labels(
+                self.app.name, self.model.name, scope=LB_LABEL
+            ),
+            resource_types={Service},
+            lightkube_client=self.lightkube_client,
+            logger=logger,
+        )
+
+    def _construct_lb(self) -> Service:
+        return Service(
+            metadata=ObjectMeta(
+                name=f"{self._lb_name}",
+                namespace=self.model.name,
+                labels={"app.kubernetes.io/name": self.app.name},
+            ),
+            spec=ServiceSpec(
+                ports=self._service_ports,
+                selector={"app.kubernetes.io/name": self.app.name},
+                type="LoadBalancer",
+            ),
+        )
+
+    def _reconcile_lb(self, _):
+        """Reconcile the LoadBalancer's state."""
+        if not self.unit.is_leader():
+            return
+
+        klm = self._get_lb_resource_manager()
+        resources_list = []
+        resources_list.append(self._construct_lb())
+        logger.info(
+            f"Patching k8s loadbalancer service object {self._lb_name}"
+        )
+        klm.reconcile(resources_list)
+
+    def _on_remove(self, _):
+        if not self.unit.is_leader():
+            return
+
+        logger.info(
+            f"Removing k8s loadbalancer service object {self._lb_name}"
+        )
+        klm = self._get_lb_resource_manager()
+        klm.delete()
 
 
 if __name__ == "__main__":

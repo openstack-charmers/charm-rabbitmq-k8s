@@ -21,7 +21,6 @@ from unittest.mock import (
     MagicMock,
     Mock,
     call,
-    patch,
 )
 
 import ops.model
@@ -35,7 +34,6 @@ import charm
 class TestCharm(unittest.TestCase):
     """Unit tests for RabbitMQ operator."""
 
-    @patch("charm.KubernetesServicePatch", lambda _, service_type, ports: None)
     def setUp(self, *unused):
         """Setup test fixtures for unit tests."""
         os.environ["JUJU_VERSION"] = "3.4.4"
