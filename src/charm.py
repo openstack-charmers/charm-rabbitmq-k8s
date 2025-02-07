@@ -135,6 +135,7 @@ class RabbitMQOperatorCharm(CharmBase):
         # NOTE(jamespage): This should become part of what Juju
         # does at some point in time.
         self.framework.observe(self.on.install, self._reconcile_lb)
+        self.framework.observe(self.on.config_changed, self._reconcile_lb)
         self.framework.observe(
             self.on.rabbitmq_pebble_ready, self._on_config_changed
         )
