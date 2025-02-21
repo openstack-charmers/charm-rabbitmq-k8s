@@ -18,6 +18,7 @@
 """RabbitMQ Operator Charm."""
 
 import collections
+import functools
 import logging
 import textwrap
 from ipaddress import (
@@ -46,6 +47,9 @@ from charms.traefik_k8s.v1.ingress import (
 from lightkube.core.client import (
     Client,
 )
+from lightkube.core.exceptions import (
+    ApiError,
+)
 from lightkube.models.core_v1 import (
     ServicePort,
     ServiceSpec,
@@ -73,7 +77,6 @@ from ops.model import (
     ActiveStatus,
     BlockedStatus,
     ModelError,
-    Relation,
     WaitingStatus,
 )
 from ops.pebble import (
@@ -105,6 +108,8 @@ TIMER_NOTICE = "rabbitmq.local/timer"
 LB_LABEL = "rabbitmq-loadbalancer"
 RABBITMQ_SERVICE_PORT = 5672
 RABBITMQ_MANAGEMENT_PORT = 15672
+
+AMQP_RELATION = "amqp"
 
 
 class RabbitOperatorError(Exception):
@@ -167,7 +172,7 @@ class RabbitMQOperatorCharm(CharmBase):
         )
         # AMQP Provides
         self.amqp_provider = RabbitMQProvides(
-            self, "amqp", self.create_amqp_credentials
+            self, AMQP_RELATION, self.create_amqp_credentials
         )
         self.framework.observe(
             self.amqp_provider.on.ready_amqp_clients,
@@ -527,14 +532,16 @@ class RabbitMQOperatorCharm(CharmBase):
         """Event handler on AMQP clients ready."""
         self._on_update_status(event)
 
-    def _on_gone_away_amqp_clients(self, event) -> None:
+    def _on_gone_away_amqp_clients(
+        self, event: ops.RelationBrokenEvent
+    ) -> None:
         """Event handler on AMQP clients goneaway."""
         if not self.unit.is_leader():
             logging.debug("Not a leader unit, nothing to do")
             return
 
         api = self._get_admin_api()
-        username = self.amqp_provider.username(event)
+        username = self.amqp_provider.username(event.relation)
         if username and self.does_user_exist(username):
             api.delete_user(username)
 
@@ -562,13 +569,6 @@ class RabbitMQOperatorCharm(CharmBase):
             return
 
     @property
-    def amqp_rel(self) -> Relation:
-        """AMQP relation."""
-        for amqp in self.framework.model.relations["amqp"]:
-            # We only care about one relation. Returning the first.
-            return amqp
-
-    @property
     def peers_bind_address(self) -> str:
         """Bind address for peer interface."""
         return self._peers_bind_address()
@@ -593,12 +593,14 @@ class RabbitMQOperatorCharm(CharmBase):
 
         :returns: IP address to use for AMQP endpoint.
         """
-        return str(self.model.get_binding("amqp").network.bind_address)
+        return str(self.model.get_binding(AMQP_RELATION).network.bind_address)
 
     @property
     def ingress_address(self) -> Union[IPv4Address, IPv6Address]:
         """Network IP address for access to the RabbitMQ service."""
-        return self.model.get_binding("amqp").network.ingress_addresses[0]
+        return self.model.get_binding(AMQP_RELATION).network.ingress_addresses[
+            0
+        ]
 
     def rabbitmq_url(self, username, password, vhost) -> str:
         """URL to access RabbitMQ unit."""
@@ -708,6 +710,13 @@ class RabbitMQOperatorCharm(CharmBase):
     def hostname(self) -> str:
         """Hostname for access to RabbitMQ."""
         return f"{self.app.name}-endpoints.{self.model.name}.svc.cluster.local"
+
+    def get_hostname(self, external_connectivity: bool = False) -> str:
+        """Hostname for access to RabbitMQ."""
+        if not external_connectivity:
+            return self.hostname
+
+        return self._get_loadbalancer_ip() or self.hostname
 
     @property
     def _rabbitmq_mgmt_url(self) -> str:
@@ -1006,10 +1015,18 @@ USE_LONGNAME=true
                 )
                 return
 
+        # We don't have a better way than relying on
+        # update status to catch loadbalancer changes
+        self._publish_relation_data()
+
         self.unit.status = ActiveStatus()
 
     def create_amqp_credentials(
-        self, event: EventBase, username: str, vhost: str
+        self,
+        event: ops.RelationEvent,
+        username: str,
+        vhost: str,
+        external_connectivity: bool,
     ) -> None:
         """Set AMQP Credentials.
 
@@ -1041,7 +1058,9 @@ USE_LONGNAME=true
             password = self.peers.retrieve_password(username)
             self.set_user_permissions(username, vhost)
             event.relation.data[self.app]["password"] = password
-            event.relation.data[self.app]["hostname"] = self.hostname
+            event.relation.data[self.app]["hostname"] = self.get_hostname(
+                external_connectivity
+            )
         except requests.exceptions.HTTPError as http_e:
             # If the peers binding address exists, but the operator has not
             # been set up yet, the command will fail with a http 401 error and
@@ -1053,12 +1072,24 @@ USE_LONGNAME=true
                 )
                 event.defer()
             else:
-                raise ()
+                raise http_e
         except requests.exceptions.ConnectionError as e:
             logging.warning(
                 f"Rabbitmq is not ready, deferring. Errno: {e.errno}"
             )
             event.defer()
+
+    def _publish_relation_data(self) -> None:
+        """Update all relation data to latest state."""
+        for relation in self.model.relations[AMQP_RELATION]:
+            if not relation.active or not relation.data[self.app].get(
+                "password"
+            ):
+                # Skip if no password yet
+                continue
+            relation.data[self.app]["hostname"] = self.get_hostname(
+                self.amqp_provider.external_connectivity(relation)
+            )
 
     def _get_service_account(self, event: ActionEvent) -> None:
         """Get/create service account details for access to RabbitMQ.
@@ -1314,6 +1345,33 @@ USE_LONGNAME=true
         )
         klm = self._get_lb_resource_manager()
         klm.delete()
+
+    @functools.cache
+    def _get_loadbalancer_ip(self) -> str | None:
+        """Helper to get loadbalancer IP.
+
+        Result is cached for the whole duration of a hook.
+        """
+        try:
+            rabbitmq_service = self.lightkube_client.get(
+                Service, name=self._lb_name, namespace=self.model.name
+            )
+        except ApiError as e:
+            logger.error(f"Failed to fetch LoadBalancer {self._lb_name}: {e}")
+            return None
+
+        if not (status := getattr(rabbitmq_service, "status", None)):
+            return None
+        if not (load_balancer_status := getattr(status, "loadBalancer", None)):
+            return None
+        if not (
+            ingress_addresses := getattr(load_balancer_status, "ingress", None)
+        ):
+            return None
+        if not (ingress_address := ingress_addresses[0]):
+            return None
+
+        return ingress_address.ip
 
 
 if __name__ == "__main__":
