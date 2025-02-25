@@ -421,3 +421,68 @@ class TestCharm(unittest.TestCase):
                 call("node1", "/", "queue2"),
             ]
         )
+
+    def test_publish_relation_data_on_leader(self):
+        """Test the publish relation data is fired."""
+        self.harness.set_leader(True)
+        self.harness.set_can_connect("rabbitmq", True)
+        self.harness.charm._publish_relation_data = Mock(
+            side_effect=self.harness.charm._publish_relation_data
+        )
+        self.harness.add_relation(
+            "peers",
+            "rabbitmq-k8s",
+            app_data={
+                "operator_password": "foobar",
+                "operator_user_created": "rmqadmin",
+                "erlang_cookie": "magicsecurity",
+                "nova": "the_password",
+            },
+        )
+
+        self.harness.charm.on.update_status.emit()
+        self.harness.charm._publish_relation_data.assert_called_once()
+        self.harness.charm._publish_relation_data.reset_mock()
+        amqp_rel_id = self.harness.add_relation(
+            "amqp", "nova", app_data={"username": "nova", "vhost": "os"}
+        )
+        self.harness.charm._publish_relation_data.assert_called_once()
+        rel_data = self.harness.get_relation_data(
+            amqp_rel_id, self.harness.charm.app.name
+        )
+        self.assertEqual(
+            rel_data,
+            {
+                "password": "the_password",
+                "hostname": self.harness.charm.hostname,
+            },
+        )
+
+    def test_publish_relation_data_on_non_leader(self):
+        """Test the publish relation data is not fired."""
+        self.harness.set_leader(False)
+        self.harness.set_can_connect("rabbitmq", True)
+
+        self.harness.add_relation(
+            "peers",
+            "rabbitmq-k8s",
+            app_data={
+                "operator_password": "foobar",
+                "operator_user_created": "rmqadmin",
+                "erlang_cookie": "magicsecurity",
+                "nova": "the_password",
+            },
+        )
+        self.harness.add_relation(
+            "amqp", "nova", app_data={"username": "nova", "vhost": "os"}
+        )
+
+        self.harness.charm.get_hostname = Mock(
+            side_effect=self.harness.charm.get_hostname
+        )
+        self.harness.charm._publish_relation_data = Mock(
+            side_effect=self.harness.charm._publish_relation_data
+        )
+        self.harness.charm.on.update_status.emit()
+        self.harness.charm._publish_relation_data.assert_called_once()
+        self.harness.charm.get_hostname.assert_not_called()
