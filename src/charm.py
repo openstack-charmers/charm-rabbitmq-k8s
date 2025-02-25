@@ -1082,10 +1082,12 @@ USE_LONGNAME=true
     def _publish_relation_data(self) -> None:
         """Update all relation data to latest state."""
         for relation in self.model.relations[AMQP_RELATION]:
-            if not relation.active or not relation.data[self.app].get(
-                "password"
+            if not (
+                self.model.unit.is_leader()
+                and relation.active
+                and relation.data[self.app].get("password")
             ):
-                # Skip if no password yet
+                # Skip if not leader or no password yet
                 continue
             relation.data[self.app]["hostname"] = self.get_hostname(
                 self.amqp_provider.external_connectivity(relation)
