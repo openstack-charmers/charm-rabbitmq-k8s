@@ -486,3 +486,39 @@ class TestCharm(unittest.TestCase):
         self.harness.charm.on.update_status.emit()
         self.harness.charm._publish_relation_data.assert_called_once()
         self.harness.charm.get_hostname.assert_not_called()
+
+    def test_publish_relation_data_on_model_error(self):
+        """Test the publish relation data is not fired on model error."""
+        self.harness.set_leader(True)
+        self.harness.set_can_connect("rabbitmq", True)
+
+        self.harness.add_relation(
+            "peers",
+            "rabbitmq-k8s",
+            app_data={
+                "operator_password": "foobar",
+                "operator_user_created": "rmqadmin",
+                "erlang_cookie": "magicsecurity",
+                "nova": "the_password",
+            },
+        )
+        self.harness.add_relation(
+            "amqp", "nova", app_data={"username": "nova", "vhost": "os"}
+        )
+
+        self.harness.charm.get_hostname = Mock(
+            side_effect=self.harness.charm.get_hostname
+        )
+        self.harness.charm._publish_relation_data = Mock(
+            side_effect=self.harness.charm._publish_relation_data
+        )
+        self.harness.charm.model.relations["amqp"][0].data[
+            self.harness.charm.app
+        ].get = Mock(
+            side_effect=ops.model.ModelError(
+                "ERROR permission denied (unauthorized access)"
+            )
+        )
+        self.harness.charm.on.update_status.emit()
+        self.harness.charm._publish_relation_data.assert_called_once()
+        self.harness.charm.get_hostname.assert_not_called()

@@ -1082,11 +1082,21 @@ USE_LONGNAME=true
     def _publish_relation_data(self) -> None:
         """Update all relation data to latest state."""
         for relation in self.model.relations[AMQP_RELATION]:
-            if not (
-                self.model.unit.is_leader()
-                and relation.active
-                and relation.data[self.app].get("password")
-            ):
+            try:
+                is_skippable = not (
+                    self.model.unit.is_leader()
+                    and relation.active
+                    and relation.data[self.app].get("password")
+                )
+            except ops.ModelError:
+                logger.debug(
+                    "Fail to read relation data: rel=%s rel_id=%d, skipping",
+                    relation.name,
+                    relation.id,
+                    exc_info=True,
+                )
+                is_skippable = True
+            if is_skippable:
                 # Skip if not leader or no password yet
                 continue
             relation.data[self.app]["hostname"] = self.get_hostname(
