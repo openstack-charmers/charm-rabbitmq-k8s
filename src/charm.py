@@ -20,6 +20,7 @@
 import collections
 import functools
 import logging
+import re
 import textwrap
 from ipaddress import (
     IPv4Address,
@@ -28,7 +29,9 @@ from ipaddress import (
 from typing import (
     Dict,
     List,
+    Optional,
     Union,
+    cast,
 )
 
 import ops
@@ -111,6 +114,39 @@ RABBITMQ_MANAGEMENT_PORT = 15672
 
 AMQP_RELATION = "amqp"
 
+# Regex for Kubernetes annotation values:
+# - Allows alphanumeric characters, dots (.), dashes (-), and underscores (_)
+# - Matches the entire string
+# - Does not allow empty strings
+# - Example valid: "value1", "my-value", "value.name", "value_name"
+# - Example invalid: "value@", "value#", "value space"
+ANNOTATION_VALUE_PATTERN = re.compile(r"^[\w.\-_]+$")
+
+# Based on
+# https://github.com/kubernetes/apimachinery/blob/v0.31.3/pkg/util/validation/validation.go#L204
+# Regex for DNS1123 subdomains:
+# - Starts with a lowercase letter or number ([a-z0-9])
+# - May contain dashes (-), but not consecutively, and must not start or end with them
+# - Segments can be separated by dots (.)
+# - Example valid: "example.com", "my-app.io", "sub.domain"
+# - Example invalid: "-example.com", "example..com", "example-.com"
+DNS1123_SUBDOMAIN_PATTERN = re.compile(
+    r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+)
+
+# Based on
+# https://github.com/kubernetes/apimachinery/blob/v0.31.3/pkg/util/validation/validation.go#L32
+# Regex for Kubernetes qualified names:
+# - Starts with an alphanumeric character ([A-Za-z0-9])
+# - Can include dashes (-), underscores (_), dots (.), or alphanumeric characters in the middle
+# - Ends with an alphanumeric character
+# - Must not be empty
+# - Example valid: "annotation", "my.annotation", "annotation-name"
+# - Example invalid: ".annotation", "annotation.", "-annotation", "annotation@key"
+QUALIFIED_NAME_PATTERN = re.compile(
+    r"^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$"
+)
+
 
 class RabbitOperatorError(Exception):
     """Common base class for all RabbitMQ Operator exceptions."""
@@ -144,6 +180,7 @@ class RabbitMQOperatorCharm(CharmBase):
             self.on.rabbitmq_pebble_ready, self._on_config_changed
         )
         self.framework.observe(self.on.config_changed, self._on_config_changed)
+        self.framework.observe(self.on.config_changed, self._reconcile_lb)
         self.framework.observe(
             self.on.get_operator_info_action, self._on_get_operator_info_action
         )
@@ -298,6 +335,7 @@ class RabbitMQOperatorCharm(CharmBase):
 
         _check_rmq_running()
         self._on_update_status(event)
+        self._reconcile_lb(None)
 
     def _rabbitmq_layer(self) -> dict:
         """Pebble layer definition for RabbitMQ."""
@@ -601,6 +639,34 @@ class RabbitMQOperatorCharm(CharmBase):
         return self.model.get_binding(AMQP_RELATION).network.ingress_addresses[
             0
         ]
+
+    @property
+    def _loadbalancer_annotations(self) -> Optional[Dict[str, str]]:
+        """Parses and returns annotations to apply to the LoadBalancer service.
+
+        The annotations are expected as a string in the configuration,
+        formatted as: "key1=value1,key2=value2,key3=value3". This string is
+        parsed into a dictionary where each key-value pair corresponds to an annotation.
+
+        Returns:
+            Optional[Dict[str, str]]:
+            A dictionary of annotations if provided in the Juju config and valid, otherwise None.
+        """
+        lb_annotations = cast(
+            Optional[str], self.config.get("loadbalancer_annotations", None)
+        )
+        return parse_annotations(lb_annotations)
+
+    @property
+    def _annotations_valid(self) -> bool:
+        """Check if the annotations are valid.
+
+        :return: True if the annotations are valid, False otherwise.
+        """
+        if self._loadbalancer_annotations is None:
+            logger.error("Annotations are invalid or could not be parsed.")
+            return False
+        return True
 
     def rabbitmq_url(self, username, password, vhost) -> str:
         """URL to access RabbitMQ unit."""
@@ -1327,6 +1393,7 @@ USE_LONGNAME=true
                 name=f"{self._lb_name}",
                 namespace=self.model.name,
                 labels={"app.kubernetes.io/name": self.app.name},
+                annotations=self._loadbalancer_annotations,
             ),
             spec=ServiceSpec(
                 ports=self._service_ports,
@@ -1342,10 +1409,15 @@ USE_LONGNAME=true
 
         klm = self._get_lb_resource_manager()
         resources_list = []
-        resources_list.append(self._construct_lb())
-        logger.info(
-            f"Patching k8s loadbalancer service object {self._lb_name}"
-        )
+        if self._annotations_valid:
+            resources_list.append(self._construct_lb())
+            logger.info(
+                f"Patching k8s loadbalancer service object {self._lb_name}"
+            )
+        else:
+            self.unit.status = BlockedStatus(
+                "Invalid config value 'loadbalancer_annotations'"
+            )
         klm.reconcile(resources_list)
 
     def _on_remove(self, _):
@@ -1384,6 +1456,96 @@ USE_LONGNAME=true
             return None
 
         return ingress_address.ip
+
+
+def validate_annotation_key(key: str) -> bool:
+    """Validate the annotation key."""
+    if len(key) > 253:
+        logger.error(
+            f"Invalid annotation key: '{key}'. Key length exceeds 253 characters."
+        )
+        return False
+
+    if not is_qualified_name(key.lower()):
+        logger.error(
+            f"Invalid annotation key: '{key}'. Must follow Kubernetes annotation syntax."
+        )
+        return False
+
+    if key.startswith(("kubernetes.io/", "k8s.io/")):
+        logger.error(
+            f"Invalid annotation: Key '{key}' uses a reserved prefix."
+        )
+        return False
+
+    return True
+
+
+def validate_annotation_value(value: str) -> bool:
+    """Validate the annotation value."""
+    if not ANNOTATION_VALUE_PATTERN.match(value):
+        logger.error(
+            f"Invalid annotation value: '{value}'. Must follow Kubernetes annotation syntax."
+        )
+        return False
+
+    return True
+
+
+def parse_annotations(annotations: Optional[str]) -> Optional[Dict[str, str]]:
+    """Parse and validate annotations from a string.
+
+    logic is based on Kubernetes annotation validation as described here:
+    https://github.com/kubernetes/apimachinery/blob/v0.31.3/pkg/api/validation/objectmeta.go#L44
+    """
+    if not annotations:
+        return {}
+
+    annotations = annotations.strip().rstrip(
+        ","
+    )  # Trim spaces and trailing commas
+
+    try:
+        parsed_annotations = {
+            key.strip(): value.strip()
+            for key, value in (
+                pair.split("=", 1) for pair in annotations.split(",") if pair
+            )
+        }
+    except ValueError:
+        logger.error(
+            "Invalid format for 'loadbalancer_annotations'. "
+            "Expected format: key1=value1,key2=value2."
+        )
+        return None
+
+    # Validate each key-value pair
+    for key, value in parsed_annotations.items():
+        if not validate_annotation_key(key) or not validate_annotation_value(
+            value
+        ):
+            return None
+
+    return parsed_annotations
+
+
+def is_qualified_name(value: str) -> bool:
+    """Check if a value is a valid Kubernetes qualified name."""
+    parts = value.split("/")
+    if len(parts) > 2:
+        return False  # Invalid if more than one '/'
+
+    if len(parts) == 2:  # If prefixed
+        prefix, name = parts
+        if not prefix or not DNS1123_SUBDOMAIN_PATTERN.match(prefix):
+            return False
+    else:
+        name = parts[0]  # No prefix
+
+    if not name or len(name) > 63 or not QUALIFIED_NAME_PATTERN.match(name):
+        return False
+
+    return True
 
 
 if __name__ == "__main__":
