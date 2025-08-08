@@ -1,9 +1,0 @@
-ops
-pika
-pwgen
-rabbitmq-admin
-tenacity
-lightkube
-lightkube-models
-lightkube-extensions @ git+https://github.com/canonical/lightkube-extensions.git@main
-jsonschema
